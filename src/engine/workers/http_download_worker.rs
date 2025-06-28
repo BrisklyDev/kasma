@@ -17,4 +17,3 @@ impl DownloadWorker for HttpDownloadWorker {
         todo!()
     }
 }
-
