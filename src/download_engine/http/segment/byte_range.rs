@@ -1,6 +1,7 @@
 use std::fmt;
 
-struct ByteRange {
+#[derive(Clone)]
+pub struct ByteRange {
     start: u64,
     end: u64,
 }
@@ -34,4 +35,3 @@ impl fmt::Display for ByteRange {
         write!(f, "ByteRange::{}-{}", self.start, self.end)
     }
 }
-
