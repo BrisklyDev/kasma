@@ -9,14 +9,16 @@ pub mod download_engine;
 #[tokio::main]
 async fn main() {
     // Example: spawn thread per download
-    let engine = HttpDownloadEngine::new();
-    let handle = spawn_engine(&engine);
+    let handle = thread::spawn(move || {
+        let mut engine = HttpDownloadEngine::new();
+        engine.run();
+    });
     handle.join().unwrap();
 }
 
-fn spawn_engine<T: Engine>(engine: &T) -> thread::JoinHandle<()> {
-    engine.spawn_engine_thread()
-}
+// fn spawn_engine<T: Engine>(engine: &T) -> thread::JoinHandle<()> {
+//     engine.spawn_engine_thread()
+// }
 
 fn run_download_task() {
     let mut handles = vec![];

@@ -1,42 +1,50 @@
 use crate::download_engine::DownloadInfo;
 use crate::download_engine::download_worker::DownloadWorker;
+use crate::download_engine::http::http_download_engine::{EngineToWorkerMsg, WorkerToEngineMsg};
 use crate::download_engine::http::segment::byte_range::ByteRange;
 use crate::download_engine::http::{ClientError, HttpClient};
-use crate::download_engine::utils::shared_data::{CachedData, ReadHandle};
+use crate::download_engine::utils::shared_data::ReadHandle;
 use http_body_util::{BodyExt, Empty};
 use hyper::Request;
 use hyper::body::Bytes;
-use std::fs::File;
-use std::io::Write;
 use std::thread::JoinHandle;
-use tokio::sync::watch::Receiver;
+use tokio::sync::mpsc::{Receiver, Sender};
 
-/// The worker responsible for downloading a file using HTTP
-pub struct HttpDownloadWorker<'a> {
-    pub worker_number: u8,
-    download_info: ReadHandle<DownloadInfo>,
-    byte_range: CachedData<'a, ByteRange>,
-    data_buffer: Vec<Bytes>,
-    cancel_rx: Receiver<bool>,
+pub enum HttpDownloadWorkerCommand {
+    Start,
+    Pause,
+    Cancel,
 }
 
-impl<'a> HttpDownloadWorker<'a> {
+/// The worker responsible for downloading a file using HTTP
+pub struct HttpDownloadWorker {
+    pub worker_number: u8,
+    download_info: ReadHandle<DownloadInfo>,
+    byte_range: ByteRange,
+    data_buffer: Vec<Bytes>,
+    to_engine_tx: Sender<WorkerToEngineMsg>,
+    from_engine_rx: Receiver<EngineToWorkerMsg>,
+}
+
+impl HttpDownloadWorker {
     pub fn new(
         info: ReadHandle<DownloadInfo>,
-        byte_range: &'a ByteRange,
-        cancel_rx: Receiver<bool>,
+        byte_range: ByteRange,
+        to_engine_tx: Sender<WorkerToEngineMsg>,
+        from_engine_rx: Receiver<EngineToWorkerMsg>,
     ) -> Self {
         HttpDownloadWorker {
             download_info: info,
             worker_number: 0,
-            byte_range: CachedData::new(byte_range),
+            byte_range,
             data_buffer: vec![],
-            cancel_rx,
+            to_engine_tx,
+            from_engine_rx,
         }
     }
 }
 
-impl<'a> DownloadWorker for HttpDownloadWorker<'a> {
+impl DownloadWorker for HttpDownloadWorker {
     fn spawn_worker_thread(&self) -> JoinHandle<()> {
         todo!()
     }
@@ -58,15 +66,18 @@ impl<'a> DownloadWorker for HttpDownloadWorker<'a> {
     }
 
     fn pause(&self) {
-        todo!()
+        self.cancel();
     }
 
     fn cancel(&self) {
-        todo!()
+        // println!("Cancelling download...");
+        // // self.cancel_tx
+        //     .send(true)
+        //     .expect("Failed to send cancellation signal");
     }
 }
 
-impl<'a> HttpDownloadWorker<'a> {
+impl HttpDownloadWorker {
     async fn start_download(&mut self, path: &str) -> Result<(), ClientError> {
         let url = &self.download_info.read().url;
         println!("Downloading {} using hyper...", url);
@@ -80,7 +91,7 @@ impl<'a> HttpDownloadWorker<'a> {
 
         let resp = client.send(req).await?;
         let mut body = resp.into_body();
-        let mut file = File::create(path).unwrap();
+        // let mut file = File::create(path).unwrap();
 
         // while let Some(frame) = body.frame().await {
         //     println!("Receiving frame!!");
@@ -107,10 +118,17 @@ impl<'a> HttpDownloadWorker<'a> {
                         }
                     }
                 }
-                _ = self.cancel_rx.changed() => {
-                    println!("Cancellation signal received. Exiting download...");
-                    break; // dropping `body` and canceling connection
+                Some(msg) = self.from_engine_rx.recv() => {
+                    match msg {
+                        EngineToWorkerMsg::Cancel => {
+                            println!("Cancel message received from engine. Exiting download...");
+                            break;
+                        }
+                        // Handle other messages if needed
+                        _ => {}
+                    }
                 }
+
             }
         }
         Ok(())

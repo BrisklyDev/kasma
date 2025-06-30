@@ -40,8 +40,8 @@ pub struct NetworkProxy {
     password: String,
 }
 
-pub trait Engine: Send + 'static {
-    fn spawn_engine_thread(&self) -> thread::JoinHandle<()>;
+pub trait Engine: Send {
+    fn run(&mut self);
 }
 
 pub fn run_download_engine() {
