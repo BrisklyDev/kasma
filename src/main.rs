@@ -6,7 +6,8 @@ use crate::download_engine::{Engine, http::http_download_engine::HttpDownloadEng
 
 pub mod download_engine;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Example: spawn thread per download
     let engine = HttpDownloadEngine::new();
     let handle = spawn_engine(&engine);

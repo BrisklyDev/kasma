@@ -29,20 +29,25 @@ impl<T> ReadWriteHandle<T> {
 
 pub struct SharedData<T> {
     inner: Arc<RwLock<T>>,
+    pub read_write_handle: ReadWriteHandle<T>,
+    pub read_handle: ReadHandle<T>,
 }
 
 /// Offers an interface for references to be read-only without having access to obtain a lock.
 /// For example, a thread can hold a read-only reference but because it only has access to a
 /// ReadHandle, it cannot modify the value.
 impl<T> SharedData<T> {
-    pub fn new(data: T) -> (ReadWriteHandle<T>, ReadHandle<T>) {
+    pub fn new(data: T) -> SharedData<T> {
         let inner = Arc::new(RwLock::new(data));
-        (
-            ReadWriteHandle {
+        SharedData {
+            read_handle: ReadHandle {
                 inner: inner.clone(),
             },
-            ReadHandle { inner },
-        )
+            read_write_handle: ReadWriteHandle {
+                inner: inner.clone(),
+            },
+            inner,
+        }
     }
 }
 

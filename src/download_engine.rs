@@ -1,4 +1,7 @@
-use std::{iter::Map, thread};
+use crate::download_engine::http::FileInfo;
+use std::collections::HashMap;
+use std::thread;
+use uuid::Uuid;
 
 pub mod download_worker;
 pub mod http;
@@ -12,10 +15,23 @@ pub struct Setting {
 pub struct DownloadInfo {
     uid: String,
     url: String,
-    headers: Map<String, String>,
-    supports_byte_range: bool,
+    headers: HashMap<String, String>,
+    supports_range: bool,
     file_size: u64,
     file_name: String,
+}
+
+impl DownloadInfo {
+    pub fn from(file_info: &FileInfo) -> Self {
+        Self {
+            uid: Uuid::new_v4().to_string(),
+            url: file_info.url.clone(),
+            headers: file_info.headers.clone(),
+            supports_range: file_info.supports_range,
+            file_size: file_info.file_size,
+            file_name: file_info.file_name.clone(),
+        }
+    }
 }
 
 pub struct NetworkProxy {
