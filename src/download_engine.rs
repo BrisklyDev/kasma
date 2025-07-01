@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::thread;
 use uuid::Uuid;
 
-pub mod download_worker;
 pub mod http;
 pub mod utils;
 
@@ -40,7 +39,7 @@ pub struct NetworkProxy {
     password: String,
 }
 
-pub trait Engine: Send {
+pub trait Runnable: Send {
     fn run(&mut self);
 }
 

@@ -1,9 +1,9 @@
 use crate::download_engine::http::fetch_file_info;
+use crate::download_engine::http::http_download_worker::Status;
 use crate::download_engine::http::segment::byte_range::ByteRange;
 use crate::download_engine::utils::shared_data::SharedData;
 use crate::download_engine::{
-    DownloadInfo, Engine, download_worker::DownloadWorker,
-    http::http_download_worker::HttpDownloadWorker,
+    DownloadInfo, Runnable, http::http_download_worker::HttpDownloadWorker,
 };
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,16 +18,15 @@ pub enum WorkerToEngineMsg {
 
 #[derive(Debug)]
 pub enum EngineToWorkerMsg {
-    StartDownload(String, String),
-    Pause,
-    Cancel,
+    Start,
+    Stop,
 }
 
 pub struct HttpDownloadEngine {
     workers: Vec<Arc<Mutex<HttpDownloadWorker>>>,
 }
 
-impl Engine for HttpDownloadEngine {
+impl Runnable for HttpDownloadEngine {
     fn run(&mut self) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -50,11 +49,13 @@ impl Engine for HttpDownloadEngine {
         let (engine_to_worker_tx, engine_to_worker_rx) =
             tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
 
+        let status_arc = Arc::new(Mutex::new(Status::Initial));
         let worker = HttpDownloadWorker::new(
             download_info_shared.read_handle,
             range,
             worker_to_engine_tx,
             engine_to_worker_rx,
+            status_arc.clone(),
         );
         let worker_arc = Arc::new(Mutex::new(worker));
         self.workers.push(worker_arc.clone());
@@ -70,7 +71,9 @@ impl Engine for HttpDownloadEngine {
                     println!("Cancelation spawned!!");
                     tokio::time::sleep(Duration::from_secs(4)).await;
                     println!("⛔ Sending cancel signal...");
-                    engine_to_worker_tx.send(EngineToWorkerMsg::Cancel).await;
+                    engine_to_worker_tx.send(EngineToWorkerMsg::Stop).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    engine_to_worker_tx.send(EngineToWorkerMsg::Start).await;
                 });
             })
         };
@@ -80,7 +83,7 @@ impl Engine for HttpDownloadEngine {
             let worker_clone = worker_arc.clone();
             thread::spawn(move || {
                 let mut worker = worker_clone.lock().unwrap();
-                worker.start(); // or spawn_worker_thread()
+                worker.run(); // or spawn_worker_thread()
             })
         };
         cancel_handle.join().unwrap();

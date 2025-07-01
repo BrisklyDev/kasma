@@ -1,8 +1,8 @@
 use std::thread;
-
+use hyper::header::RANGE;
 use tokio::runtime::Runtime;
 
-use crate::download_engine::{Engine, http::http_download_engine::HttpDownloadEngine};
+use crate::download_engine::{Runnable, http::http_download_engine::HttpDownloadEngine};
 
 pub mod download_engine;
 

@@ -1,3 +1,4 @@
+use hyper::header::RANGE;
 use std::fmt;
 
 #[derive(Clone)]
@@ -21,6 +22,13 @@ impl ByteRange {
 
     pub fn is_valid(&self) -> bool {
         self.start != self.end && self.start < self.end && self.start + 1 < self.end
+    }
+
+    pub fn to_header(&self) -> (String, String) {
+        (
+            RANGE.to_string(),
+            format!("bytes={}-{}", self.start, self.end),
+        )
     }
 }
 
