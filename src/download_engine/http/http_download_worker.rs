@@ -2,19 +2,21 @@ use crate::download_engine::http::http_download_engine::{EngineToWorkerMsg, Work
 use crate::download_engine::http::http_download_worker::Status::{Starting, Stopped};
 use crate::download_engine::http::segment::byte_range::ByteRange;
 use crate::download_engine::http::{ClientError, HttpClient};
-use crate::download_engine::utils::now_millis;
-use crate::download_engine::utils::shared_data::ReadHandle;
+use crate::download_engine::utils::{TempFileMetadata, now_millis};
 use crate::download_engine::{DownloadInfo, Runnable};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
-use std::net::Incoming;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 const SPEED_CHECK_WINDOW_MILLIS: u32 = 1100;
+const MIN_FLUSH: u64 = 64 * 1024; // 64 KB
+const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 
 pub enum HttpDownloadWorkerCommand {
     Start,
@@ -29,39 +31,68 @@ pub enum Status {
     Starting,
 }
 
+pub struct WorkerProgress {
+    pub speed_bytes_per_sec: u64,
+    pub worker_download_progress: f64,
+    pub total_download_progress: f64,
+}
+
+impl WorkerProgress {
+    pub(crate) fn new() -> Self {
+        WorkerProgress {
+            speed_bytes_per_sec: 0,
+            worker_download_progress: 0.0,
+            total_download_progress: 0.0,
+        }
+    }
+}
+
 /// The worker responsible for downloading a file using HTTP
 pub struct HttpDownloadWorker {
     pub worker_number: u8,
-    download_info: ReadHandle<DownloadInfo>,
+    download_info: DownloadInfo,
     byte_range: ByteRange,
     data_buffer: Vec<Bytes>,
-    speed_check_buffer: Vec<Bytes>,
+    speed_check_bytes: u64,
     to_engine_tx: Sender<WorkerToEngineMsg>,
     from_engine_rx: Receiver<EngineToWorkerMsg>,
     status: Arc<Mutex<Status>>,
+    progress: Arc<Mutex<WorkerProgress>>,
     last_speed_check_epoch_millis: u128,
-    temp_bytes_recieved: u64,
+    temp_bytes_received: u64,
+    buffer_flush_threshold: u64,
+    prev_buffer_end_byte: u64,
+    total_request_bytes_received: u64,
+    total_bytes_received: u64,
+    cached_temp_files: Vec<TempFileMetadata>,
 }
 
 impl HttpDownloadWorker {
     pub fn new(
-        info: ReadHandle<DownloadInfo>,
+        info: DownloadInfo,
         byte_range: ByteRange,
         to_engine_tx: Sender<WorkerToEngineMsg>,
         from_engine_rx: Receiver<EngineToWorkerMsg>,
         status: Arc<Mutex<Status>>,
+        progress: Arc<Mutex<WorkerProgress>>,
     ) -> Self {
         HttpDownloadWorker {
             download_info: info,
             worker_number: 0,
             byte_range,
             data_buffer: vec![],
-            speed_check_buffer: vec![],
+            speed_check_bytes: 0,
             to_engine_tx,
             from_engine_rx,
             status,
+            progress,
             last_speed_check_epoch_millis: now_millis(),
-            temp_bytes_recieved: 0,
+            temp_bytes_received: 0,
+            buffer_flush_threshold: 0,
+            prev_buffer_end_byte: 0,
+            total_request_bytes_received: 0,
+            total_bytes_received: 0,
+            cached_temp_files: vec![],
         }
     }
 }
@@ -106,20 +137,6 @@ impl Runnable for HttpDownloadWorker {
                     _ => {}
                 }
             }
-            // loop {
-            //     if let Ok(EngineToWorkerMsg::Start) = self.from_engine_rx.try_recv() {
-            //         println!("Download start received.");
-            //         self.stopped = false;
-            //     }
-            //     if (self.stopped) {
-            //         continue;
-            //     }
-            //     if let Err(err) = self.start_download("winrar.zip").await {
-            //         eprintln!("Download failed: {}", err);
-            //     } else {
-            //         println!("Download complete");
-            //     }
-            // }
         });
     }
 }
@@ -134,21 +151,12 @@ impl HttpDownloadWorker {
         }
         let resp = client.send(req).await?;
         let mut body = resp.into_body();
-        // let mut file = File::create(path).unwrap();
-        // while let Some(frame) = body.frame().await {
-        //     println!("Receiving frame!!");
-        //     let frame = frame.unwrap(); // TODO remove unwrap
-        //     if let Some(data) = frame.data_ref() {
-        //         self.data_buffer.push(data.clone());
-        //         let _ = file.write_all(data);
-        //     }
-        // }
         loop {
             tokio::select! {
                 frame = body.frame() => {
                     match frame {
                         Some(Ok(chunk)) => {
-                            self.process_chunk(chunk);
+                            self.process_chunk(chunk).await;
                         }
                         Some(Err(e)) => {
                             eprintln!("Error while reading: {}", e);
@@ -178,17 +186,31 @@ impl HttpDownloadWorker {
     }
 
     /// Adds the received bytes to the buffer and flushes to disk periodically
-    fn process_chunk(&mut self, data: Frame<Bytes>) {
+    async fn process_chunk(&mut self, data: Frame<Bytes>) {
         let chunk = data.data_ref().unwrap().clone();
         *self.status.lock().unwrap() = Status::Downloading;
-        self.temp_bytes_recieved += chunk.len() as u64;
-        self.data_buffer.push(chunk.clone());
+        let chunk_size = chunk.len() as u64;
         println!("Received chunk of size: {}", data.data_ref().unwrap().len());
-        self.calculate_speed(chunk);
+        self.update_received_bytes(chunk_size);
+        self.calculate_speed(chunk_size);
+        self.data_buffer.push(chunk);
+        self.calculate_flush_threshold();
+        self.update_download_progress();
+        // if receivedbytes exceed end byte
+        if self.temp_bytes_received > self.buffer_flush_threshold {
+            self.flush_buffer().await;
+        }
     }
 
-    fn calculate_speed(&mut self, chunk: Bytes) {
-        self.speed_check_buffer.push(chunk);
+    fn update_received_bytes(&mut self, len: u64) {
+        self.temp_bytes_received += len;
+        self.total_request_bytes_received += len;
+        self.total_bytes_received += len;
+    }
+
+    fn calculate_speed(&mut self, len: u64) {
+        self.speed_check_bytes += len;
+        let total_len: u64 = self.speed_check_bytes;
         let now = now_millis();
         if self.last_speed_check_epoch_millis + SPEED_CHECK_WINDOW_MILLIS as u128 > now {
             return;
@@ -196,28 +218,86 @@ impl HttpDownloadWorker {
         let time_check_before = self.last_speed_check_epoch_millis;
         self.last_speed_check_epoch_millis = now;
         let elapsed_sec = (now - time_check_before) as f64 / 1000.0;
-        let total_len: u64 = self.speed_check_buffer.iter().map(|c| c.len() as u64).sum();
-        
+
         if total_len == 0 || elapsed_sec < 0.001 {
             return;
         }
-        
-        let speed_MB = (total_len as f64 / 1048576.0) / elapsed_sec;
-        let speed_KB = (total_len as f64 / 1024.0) / elapsed_sec;
-        let speed_B = total_len as f64 / elapsed_sec;
-        
-        if speed_MB > 1.0 {
-            println!("Speed {:.2} MB/s", speed_MB);
-        } else if speed_KB > 1.0 {
-            println!("Speed {:.2} KB/s", speed_KB);
+
+        let speed_mb = (total_len as f64 / 1048576.0) / elapsed_sec;
+        let speed_kb = (total_len as f64 / 1024.0) / elapsed_sec;
+        let speed_b = total_len as f64 / elapsed_sec;
+
+        if speed_mb > 1.0 {
+            println!("Speed {:.2} MB/s", speed_mb);
+        } else if speed_kb > 1.0 {
+            println!("Speed {:.2} KB/s", speed_kb);
         } else {
-            println!("Speed {:.2} B/s", speed_B);
+            println!("Speed {:.2} B/s", speed_b);
         }
-        self.speed_check_buffer.clear();
+        self.speed_check_bytes = 0;
+        self.progress.lock().unwrap().speed_bytes_per_sec = speed_b as u64;
+    }
+
+    fn calculate_flush_threshold(&mut self) {
+        self.buffer_flush_threshold = self
+            .progress
+            .lock()
+            .unwrap()
+            .speed_bytes_per_sec
+            .saturating_mul(2)
+            .clamp(MIN_FLUSH, MAX_FLUSH);
+    }
+
+    fn update_download_progress(&self) {
+        let mut progress = self.progress.lock().unwrap();
+        progress.worker_download_progress =
+            self.total_request_bytes_received as f64 / self.byte_range.len() as f64;
+        progress.total_download_progress =
+            self.total_bytes_received as f64 / self.download_info.file_size as f64;
+        if progress.worker_download_progress > 1.0 {
+            let excess_bytes = self.total_request_bytes_received - self.byte_range.len();
+            progress.total_download_progress = (self.total_bytes_received as f64
+                - excess_bytes as f64)
+                / self.download_info.file_size as f64;
+        }
+    }
+
+    async fn flush_buffer(&mut self) {
+        if self.data_buffer.is_empty() {
+            return;
+        }
+        let temp_file_name = format!(
+            "{}#{}-{}",
+            self.worker_number,
+            self.temp_file_start_byte(),
+            self.temp_file_end_byte(),
+        );
+        let file_path = self.temp_directory().join(&temp_file_name);
+        std::fs::create_dir_all(&file_path.parent().unwrap()).unwrap();
+        let mut file = File::create(&file_path).await.unwrap();
+        let mut temp_file_len: u64 = 0;
+        for chunk in &self.data_buffer {
+            file.write_all(chunk).await.unwrap();
+            temp_file_len += chunk.len() as u64;
+        }
+        // if tempFileStartByte > downloadItem.fileSize {
+        //     _sendEnginePanic();
+        // }
+        let file_meta = TempFileMetadata {
+            name: temp_file_name,
+            start_byte: self.temp_file_start_byte(),
+            end_byte: self.temp_file_end_byte(),
+            worker_number: self.worker_number,
+            size: temp_file_len,
+        };
+        self.cached_temp_files.push(file_meta);
+        self.total_request_bytes_received += temp_file_len;
+        self.prev_buffer_end_byte += temp_file_len;
+        self.reset_data_buffer();
     }
 
     pub fn build_request(&self) -> Result<Request<Empty<Bytes>>, http::Error> {
-        let url = &self.download_info.read().url;
+        let url = &self.download_info.url;
         let range_header = self.byte_range.to_header();
         Ok(Request::builder()
             .method("GET")
@@ -225,5 +305,22 @@ impl HttpDownloadWorker {
             .header("User-Agent", "rust-hyper/1.0") // TODO proper user agent
             .header(range_header.0, range_header.1)
             .body(Empty::<Bytes>::new())?)
+    }
+
+    fn temp_directory(&self) -> PathBuf {
+        Path::new("C:\\Users\\RyeWell\\Desktop\\asda").join(self.download_info.uid.clone())
+    }
+
+    fn temp_file_start_byte(&self) -> u64 {
+        self.byte_range.start + self.prev_buffer_end_byte
+    }
+
+    fn temp_file_end_byte(&self) -> u64 {
+        self.byte_range.start + self.prev_buffer_end_byte + self.temp_bytes_received - 1
+    }
+
+    fn reset_data_buffer(&mut self) {
+        self.data_buffer.clear();
+        self.temp_bytes_received = 0;
     }
 }

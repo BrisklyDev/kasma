@@ -1,7 +1,6 @@
 use crate::download_engine::http::fetch_file_info;
-use crate::download_engine::http::http_download_worker::Status;
+use crate::download_engine::http::http_download_worker::{Status, WorkerProgress};
 use crate::download_engine::http::segment::byte_range::ByteRange;
-use crate::download_engine::utils::shared_data::SharedData;
 use crate::download_engine::{
     DownloadInfo, Runnable, http::http_download_worker::HttpDownloadWorker,
 };
@@ -43,23 +42,13 @@ impl Runnable for HttpDownloadEngine {
 
         let download_info = DownloadInfo::from(&file_info);
         let range = ByteRange::new(0, download_info.file_size);
-        let download_info_shared = SharedData::new(download_info);
         let (worker_to_engine_tx, worker_to_engine_rx) =
             tokio::sync::mpsc::channel::<WorkerToEngineMsg>(100);
         let (engine_to_worker_tx, engine_to_worker_rx) =
             tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
 
         let status_arc = Arc::new(Mutex::new(Status::Initial));
-        let worker = HttpDownloadWorker::new(
-            download_info_shared.read_handle,
-            range,
-            worker_to_engine_tx,
-            engine_to_worker_rx,
-            status_arc.clone(),
-        );
-        let worker_arc = Arc::new(Mutex::new(worker));
-        self.workers.push(worker_arc.clone());
-
+        let progress_arc = Arc::new(Mutex::new(WorkerProgress::new()));
         let cancel_handle = {
             thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -78,11 +67,17 @@ impl Runnable for HttpDownloadEngine {
             })
         };
 
-        let (worker_tx, worker_rx) = tokio::sync::mpsc::channel::<EngineToWorkerMsg>(50);
+        let (worker_tx, worker_rx) = tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
         let handle = {
-            let worker_clone = worker_arc.clone();
+            let mut worker = HttpDownloadWorker::new(
+                download_info.clone(),
+                range,
+                worker_to_engine_tx,
+                engine_to_worker_rx,
+                status_arc.clone(),
+                progress_arc.clone(),
+            );
             thread::spawn(move || {
-                let mut worker = worker_clone.lock().unwrap();
                 worker.run(); // or spawn_worker_thread()
             })
         };

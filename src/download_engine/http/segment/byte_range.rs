@@ -3,8 +3,8 @@ use std::fmt;
 
 #[derive(Clone)]
 pub struct ByteRange {
-    start: u64,
-    end: u64,
+    pub start: u64,
+    pub end: u64,
 }
 
 impl ByteRange {
@@ -22,6 +22,10 @@ impl ByteRange {
 
     pub fn is_valid(&self) -> bool {
         self.start != self.end && self.start < self.end && self.start + 1 < self.end
+    }
+    
+    pub fn len(&self) -> u64 {
+        self.end - self.start + 1
     }
 
     pub fn to_header(&self) -> (String, String) {

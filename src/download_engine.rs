@@ -11,6 +11,7 @@ pub struct Setting {
     total_connections: u8,
 }
 
+#[derive(Clone)]
 pub struct DownloadInfo {
     uid: String,
     url: String,
