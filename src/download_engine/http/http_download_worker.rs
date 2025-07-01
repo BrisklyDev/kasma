@@ -10,6 +10,7 @@ use hyper::{Request, http};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -142,47 +143,72 @@ impl Runnable for HttpDownloadWorker {
 }
 
 impl HttpDownloadWorker {
+    /// Starts the download and retries if failed.
+    /// The `from_engine_rx` is listened for any actions necessary inside the loop. The loop uses a
+    /// `tokio:select` macro between the received chunk and messages from the engine.
+    /// The download is also retried based on the `max_retries` value.
     async fn start_download(&mut self, path: &str) -> Result<(), ClientError> {
         let client = HttpClient::new();
-        let req = self.build_request()?;
-        if let Ok(EngineToWorkerMsg::Stop) = self.from_engine_rx.try_recv() {
-            println!("Download cancelled before start.");
-            return Ok(());
-        }
-        let resp = client.send(req).await?;
-        let mut body = resp.into_body();
-        loop {
-            tokio::select! {
-                frame = body.frame() => {
-                    match frame {
-                        Some(Ok(chunk)) => {
-                            self.process_chunk(chunk).await;
-                        }
-                        Some(Err(e)) => {
-                            eprintln!("Error while reading: {}", e);
-                            break;
-                        }
-                        None => {
-                            println!("Download finished.");
-                            break;
-                        }
-                    }
-                }
-                Some(msg) = self.from_engine_rx.recv() => {
-                    match msg {
-                        EngineToWorkerMsg::Stop => {
-                            println!("Cancel message received from engine. Exiting download...");
-                            *self.status.lock().unwrap() = Status::Stopped;
-                            break;
-                        }
-                        // Handle other messages if needed
-                        _ => {}
-                    }
-                }
+        let mut retry_count = 0;
+        let mut retry_count_backoff = 0;
+        let max_retries = 10;
 
+        'download: loop {
+            if retry_count >= max_retries {
+                return Err(ClientError::Other(
+                    "Maximum retry attempts reached".to_string(),
+                ));
+            }
+            let req = self.build_request()?;
+            if let Ok(EngineToWorkerMsg::Stop) = self.from_engine_rx.try_recv() {
+                println!("Download cancelled before start.");
+                return Ok(());
+            }
+            match client.send(req).await {
+                Ok(resp) => {
+                    let mut body = resp.into_body();
+                    loop {
+                        tokio::select! {
+                            frame = body.frame() => {
+                                match frame {
+                                    Some(Ok(chunk)) => {
+                                        self.process_chunk(chunk).await;
+                                        retry_count = 0; // Reset retry count on successful progress
+                                    }
+                                    Some(Err(e)) => {
+                                        eprintln!("Error while reading: {}", e);
+                                        increment_retry_and_wait(
+                                            &mut retry_count,
+                                            &mut retry_count_backoff
+                                        ).await;
+                                        continue 'download;
+                                    }
+                                    None => {
+                                        println!("Download finished.");
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            Some(msg) = self.from_engine_rx.recv() => {
+                                match msg {
+                                    EngineToWorkerMsg::Stop => {
+                                        println!("Cancel message received from engine. Exiting download...");
+                                        *self.status.lock().unwrap() = Status::Stopped;
+                                        return Ok(());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Connection error: {}", e);
+                    increment_retry_and_wait(&mut retry_count, &mut retry_count_backoff).await;
+                    return Err(e);
+                }
             }
         }
-        Ok(())
     }
 
     /// Adds the received bytes to the buffer and flushes to disk periodically
@@ -323,4 +349,19 @@ impl HttpDownloadWorker {
         self.data_buffer.clear();
         self.temp_bytes_received = 0;
     }
+}
+
+/// Increments the retry count based on an exponential backoff and sleeps for the specified time.
+/// `retry_backoff` is used so that we can reset the backoff when it reaches 16. This is to prevent
+/// unreasonably waiting for a prolonged amount of time before retrying again. This is because 
+/// sometimes some connections might get stuck and multiple retries are required.
+async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32) {
+    *retry_count += 1;
+    *retry_backoff += 1;
+    let mut delay_secs = 2u32.saturating_pow(*retry_backoff);
+    if delay_secs > 16 {
+        *retry_backoff = 1;
+        delay_secs = 2;
+    }
+    tokio::time::sleep(Duration::from_secs(delay_secs as u64)).await;
 }
