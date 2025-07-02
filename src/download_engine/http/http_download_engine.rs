@@ -1,5 +1,7 @@
 use crate::download_engine::http::fetch_file_info;
-use crate::download_engine::http::http_download_worker::{Status, WorkerProgress};
+use crate::download_engine::http::http_download_worker::{
+    Status, WorkerProgress, WorkerToEngineMsg,
+};
 use crate::download_engine::http::segment::byte_range::ByteRange;
 use crate::download_engine::{
     DownloadInfo, Runnable, http::http_download_worker::HttpDownloadWorker,
@@ -7,13 +9,6 @@ use crate::download_engine::{
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-
-#[derive(Debug)]
-pub enum WorkerToEngineMsg {
-    Progress(u8, u64),
-    Completed(u8),
-    Error(u8, String),
-}
 
 #[derive(Debug)]
 pub enum EngineToWorkerMsg {
@@ -55,7 +50,7 @@ impl Runnable for HttpDownloadEngine {
                     .enable_all()
                     .build()
                     .unwrap();
-        
+
                 rt.block_on(async move {
                     println!("Cancelation spawned!!");
                     tokio::time::sleep(Duration::from_secs(4)).await;

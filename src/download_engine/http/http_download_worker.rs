@@ -1,17 +1,17 @@
-use crate::download_engine::http::http_download_engine::{EngineToWorkerMsg, WorkerToEngineMsg};
-use crate::download_engine::http::http_download_worker::Status::{Starting, Stopped};
+use crate::download_engine::http::http_download_engine::EngineToWorkerMsg;
+use crate::download_engine::http::http_download_engine::EngineToWorkerMsg::Stop;
+use crate::download_engine::http::http_download_worker::Status::{Complete, Starting, Stopped};
 use crate::download_engine::http::segment::byte_range::ByteRange;
 use crate::download_engine::http::{ClientError, HttpClient};
-use crate::download_engine::utils::{TempFileMetadata, now_millis};
+use crate::download_engine::utils::{TempFileMetadata, list_files_in_dir, now_millis};
 use crate::download_engine::{DownloadInfo, Runnable};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::fs::File;
+use tokio::fs::{File, create_dir_all};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender};
 
@@ -19,36 +19,10 @@ const SPEED_CHECK_WINDOW_MILLIS: u32 = 1100;
 const MIN_FLUSH: u64 = 64 * 1024; // 64 KB
 const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 
-pub enum HttpDownloadWorkerCommand {
-    Start,
-    Stop,
-}
-
-#[derive(PartialEq)]
-pub enum Status {
-    Initial,
-    Stopped,
-    Downloading,
-    Starting,
-}
-
-pub struct WorkerProgress {
-    pub speed_bytes_per_sec: u64,
-    pub worker_download_progress: f64,
-    pub total_download_progress: f64,
-}
-
-impl WorkerProgress {
-    pub(crate) fn new() -> Self {
-        WorkerProgress {
-            speed_bytes_per_sec: 0,
-            worker_download_progress: 0.0,
-            total_download_progress: 0.0,
-        }
-    }
-}
-
-/// The worker responsible for downloading a file using HTTP
+/// The worker is responsible for downloading a file using HTTP. Workers are spawned in their own
+/// threads by the engine, and a single-threaded tokio runtime is spawned on their threads.
+/// Workers communicate with the engine via the `to_engine_tx` and `from_engine_rx` to send and
+/// receive messages respectively.
 pub struct HttpDownloadWorker {
     pub worker_number: u8,
     download_info: DownloadInfo,
@@ -66,6 +40,7 @@ pub struct HttpDownloadWorker {
     total_request_bytes_received: u64,
     total_bytes_received: u64,
     cached_temp_files: Vec<TempFileMetadata>,
+    terminated_on_completion: bool,
 }
 
 impl HttpDownloadWorker {
@@ -94,6 +69,7 @@ impl HttpDownloadWorker {
             total_request_bytes_received: 0,
             total_bytes_received: 0,
             cached_temp_files: vec![],
+            terminated_on_completion: false,
         }
     }
 }
@@ -107,26 +83,11 @@ impl Runnable for HttpDownloadWorker {
             .unwrap();
 
         rt.block_on(async move {
-            if let Err(err) = self.start_download("winrar.zip").await {
-                eprintln!("Download failed: {}", err);
-            } else {
-                println!("Download complete");
-            }
+            self.try_download(false).await;
             loop {
                 match self.from_engine_rx.recv().await {
                     Some(EngineToWorkerMsg::Start) => {
-                        let mut status_gaurd = self.status.lock().unwrap();
-                        if *status_gaurd == Starting {
-                            drop(status_gaurd);
-                            continue;
-                        }
-                        *status_gaurd = Starting;
-                        drop(status_gaurd);
-                        if let Err(err) = self.start_download("winrar.zip").await {
-                            eprintln!("Download failed: {}", err);
-                        } else {
-                            println!("Download complete");
-                        }
+                        self.try_download(false).await;
                     }
                     Some(EngineToWorkerMsg::Stop) => {
                         println!("Cancel received");
@@ -143,78 +104,108 @@ impl Runnable for HttpDownloadWorker {
 }
 
 impl HttpDownloadWorker {
+    /// Tries downloading the file and sends the proper messages to the engine
+    async fn try_download(&mut self, reuse: bool) {
+        if let Err(_) = self.init().await {
+            self.send_to_engine(ToEngineMessage::Failed).await;
+            return;
+        }
+
+        match self.start_download(reuse).await {
+            Ok(Complete) => self.send_to_engine(ToEngineMessage::Completed).await,
+            Ok(Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
+            Err(_) => self.send_to_engine(ToEngineMessage::Failed).await,
+            _ => {}
+        }
+    }
+
     /// Starts the download and retries if failed.
     /// The `from_engine_rx` is listened for any actions necessary inside the loop. The loop uses a
-    /// `tokio:select` macro between the received chunk and messages from the engine.
-    /// The download is also retried based on the `max_retries` value.
-    async fn start_download(&mut self, path: &str) -> Result<(), ClientError> {
+    /// `tokio:select` macro between the received chunk and messages from the engine to take actions
+    /// based on those messages, e.g., to stop the download.
+    /// `reuse` indicates if this start method is called with a connection reuse intention.
+    /// By Connection reuse we essentially mean when a worker has finished its download and is assigned
+    /// a new byte range to download.
+    async fn start_download(&mut self, reuse: bool) -> Result<Status, DownloadError> {
         let client = HttpClient::new();
-        let mut retry_count = 0;
-        let mut retry_count_backoff = 0;
-        let max_retries = 10;
-
-        'download: loop {
-            if retry_count >= max_retries {
-                return Err(ClientError::Other(
-                    "Maximum retry attempts reached".to_string(),
-                ));
-            }
-            let req = self.build_request()?;
-            if let Ok(EngineToWorkerMsg::Stop) = self.from_engine_rx.try_recv() {
-                println!("Download cancelled before start.");
-                return Ok(());
-            }
-            match client.send(req).await {
-                Ok(resp) => {
-                    let mut body = resp.into_body();
-                    loop {
-                        tokio::select! {
-                            frame = body.frame() => {
-                                match frame {
-                                    Some(Ok(chunk)) => {
-                                        self.process_chunk(chunk).await;
-                                        retry_count = 0; // Reset retry count on successful progress
-                                    }
-                                    Some(Err(e)) => {
-                                        eprintln!("Error while reading: {}", e);
-                                        increment_retry_and_wait(
-                                            &mut retry_count,
-                                            &mut retry_count_backoff
-                                        ).await;
-                                        continue 'download;
-                                    }
-                                    None => {
-                                        println!("Download finished.");
-                                        return Ok(());
-                                    }
+        if *self.status.lock().unwrap() == Starting {
+            return Err(DownloadError::InvalidCommand);
+        }
+        let req = self.build_request()?;
+        if let Err(e) = self.init().await {
+            println!("Failed to initialize download: {}", e);
+            *self.status.lock().unwrap() = Status::Failed;
+            return Err(DownloadError::Other(e.to_string()));
+        }
+        if let Ok(Stop) = self.from_engine_rx.try_recv() {
+            println!("Download cancelled before start.");
+            *self.status.lock().unwrap() = Status::Stopped;
+            return Ok(Stopped);
+        }
+        match client.send(req).await {
+            Ok(resp) => {
+                let mut body = resp.into_body();
+                loop {
+                    tokio::select! {
+                        frame = body.frame() => {
+                            match frame {
+                                Some(Ok(chunk)) => {
+                                    self.process_chunk(chunk).await;
+                                }
+                                Some(Err(e)) => {
+                                    return Err(DownloadError::Other(e.to_string()))
+                                }
+                                None => {
+                                    println!("Download finished.");
+                                    self.set_download_complete();
+                                    return Ok(Complete);
                                 }
                             }
-                            Some(msg) = self.from_engine_rx.recv() => {
-                                match msg {
-                                    EngineToWorkerMsg::Stop => {
-                                        println!("Cancel message received from engine. Exiting download...");
-                                        *self.status.lock().unwrap() = Status::Stopped;
-                                        return Ok(());
-                                    }
-                                    _ => {}
+                        }
+                        Some(msg) = self.from_engine_rx.recv() => {
+                            match msg {
+                                Stop => {
+                                    println!("Cancel message received from engine. Exiting download...");
+                                    *self.status.lock().unwrap() = Stopped;
+                                    return Ok(Stopped);
                                 }
+                                _ => {}
                             }
                         }
                     }
                 }
-                Err(e) => {
-                    eprintln!("Connection error: {}", e);
-                    increment_retry_and_wait(&mut retry_count, &mut retry_count_backoff).await;
-                    return Err(e);
-                }
             }
+            Err(e) => Err(DownloadError::Transport(e.to_string())),
+        }
+    }
+
+    async fn init(&mut self) -> Result<(), std::io::Error> {
+        {
+            *self.status.lock().unwrap() = Status::Connecting;
+        }
+        self.terminated_on_completion = false;
+        self.total_request_bytes_received = 0;
+        create_dir_all(self.temp_directory()).await?;
+        self.init_temp_files_cache();
+        Ok(())
+    }
+
+    async fn send_to_engine(&mut self, message: ToEngineMessage) {
+        let msg = WorkerToEngineMsg {
+            worker_number: self.worker_number,
+            message,
+        };
+        if let Err(e) = self.to_engine_tx.send(msg).await {
+            println!("Failed to send message to engine: {}", e);
         }
     }
 
     /// Adds the received bytes to the buffer and flushes to disk periodically
     async fn process_chunk(&mut self, data: Frame<Bytes>) {
+        {
+            *self.status.lock().unwrap() = Status::Downloading;
+        }
         let chunk = data.data_ref().unwrap().clone();
-        *self.status.lock().unwrap() = Status::Downloading;
         let chunk_size = chunk.len() as u64;
         println!("Received chunk of size: {}", data.data_ref().unwrap().len());
         self.update_received_bytes(chunk_size);
@@ -299,7 +290,6 @@ impl HttpDownloadWorker {
             self.temp_file_end_byte(),
         );
         let file_path = self.temp_directory().join(&temp_file_name);
-        std::fs::create_dir_all(&file_path.parent().unwrap()).unwrap();
         let mut file = File::create(&file_path).await.unwrap();
         let mut temp_file_len: u64 = 0;
         for chunk in &self.data_buffer {
@@ -320,6 +310,59 @@ impl HttpDownloadWorker {
         self.total_request_bytes_received += temp_file_len;
         self.prev_buffer_end_byte += temp_file_len;
         self.reset_data_buffer();
+    }
+
+    fn resolve_range(&self, reuse: bool) {
+        let req_start_byte = if reuse {
+            self.byte_range.start;
+        } else {
+            self.new_start_byte();
+        };
+        println!("New start byte: {:?}", req_start_byte);
+    }
+
+    /// Returns the next start byte to download. This is used for the pause/resume mechanism so that
+    /// the next range is downloaded
+    fn new_start_byte(&self) -> u64 {
+        let files = self.temp_files_sorted(true);
+        if files.is_empty() {
+            return self.byte_range.start;
+        }
+        files.last().unwrap().end_byte + 1
+    }
+
+    /// Adds the temp files downloaded by this worker to its cache.
+    fn init_temp_files_cache(&mut self) {
+        if self.cached_temp_files.is_empty() || !self.temp_directory().exists() {
+            return;
+        }
+        let files = list_files_in_dir(self.temp_directory()).unwrap();
+        self.cached_temp_files = files
+            .iter()
+            .map(|p| TempFileMetadata::from_path_buf(p))
+            .filter(|f| f.worker_number == self.worker_number)
+            .collect();
+    }
+
+    fn temp_files_sorted(&self, this_range_only: bool) -> Vec<TempFileMetadata> {
+        if self.cached_temp_files.is_empty() {
+            return vec![];
+        }
+        if !this_range_only {
+            let mut cloned_files = self.cached_temp_files.clone();
+            cloned_files.sort_by(|a, b| a.start_byte.cmp(&b.start_byte));
+            return cloned_files;
+        }
+
+        let mut in_range: Vec<TempFileMetadata> = self
+            .cached_temp_files
+            .iter()
+            .cloned()
+            .filter(|x| x.is_in_range(self.byte_range.clone()))
+            .collect();
+
+        in_range.sort_by(|a, b| a.start_byte.cmp(&b.start_byte));
+        in_range
     }
 
     pub fn build_request(&self) -> Result<Request<Empty<Bytes>>, http::Error> {
@@ -349,11 +392,15 @@ impl HttpDownloadWorker {
         self.data_buffer.clear();
         self.temp_bytes_received = 0;
     }
+
+    fn set_download_complete(&self) {
+        *self.status.lock().unwrap() = Status::Complete;
+    }
 }
 
 /// Increments the retry count based on an exponential backoff and sleeps for the specified time.
 /// `retry_backoff` is used so that we can reset the backoff when it reaches 16. This is to prevent
-/// unreasonably waiting for a prolonged amount of time before retrying again. This is because 
+/// unreasonably waiting for a prolonged amount of time before retrying again. This is because
 /// sometimes some connections might get stuck and multiple retries are required.
 async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32) {
     *retry_count += 1;
@@ -364,4 +411,67 @@ async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32
         delay_secs = 2;
     }
     tokio::time::sleep(Duration::from_secs(delay_secs as u64)).await;
+}
+
+#[derive(Debug)]
+pub struct WorkerToEngineMsg {
+    worker_number: u8,
+    message: ToEngineMessage,
+}
+
+#[derive(Debug)]
+pub enum ToEngineMessage {
+    Completed,
+    Stopped,
+    Failed,
+}
+
+#[derive(PartialEq)]
+pub enum Status {
+    Initial,
+    Stopped,
+    Complete,
+    Downloading,
+    Starting,
+    Connecting,
+    Failed,
+}
+
+pub enum DownloadError {
+    Transport(String),
+    Other(String),
+    InvalidCommand,
+}
+
+impl From<ClientError> for DownloadError {
+    fn from(err: ClientError) -> Self {
+        match err {
+            ClientError::Transport(transport_err) => {
+                DownloadError::Transport(transport_err.to_string())
+            }
+            ClientError::Other(other_err) => DownloadError::Other(other_err),
+        }
+    }
+}
+
+impl From<hyper::http::Error> for DownloadError {
+    fn from(err: hyper::http::Error) -> Self {
+        DownloadError::Other(err.to_string())
+    }
+}
+
+pub struct WorkerProgress {
+    pub speed_bytes_per_sec: u64,
+    pub worker_download_progress: f64,
+    pub total_download_progress: f64,
+}
+
+impl WorkerProgress {
+    pub(crate) fn new() -> Self {
+        WorkerProgress {
+            speed_bytes_per_sec: 0,
+            worker_download_progress: 0.0,
+            total_download_progress: 0.0,
+        }
+    }
 }
