@@ -8,6 +8,7 @@ use crate::download_engine::{DownloadInfo, Runnable};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -106,11 +107,6 @@ impl Runnable for HttpDownloadWorker {
 impl HttpDownloadWorker {
     /// Tries downloading the file and sends the proper messages to the engine
     async fn try_download(&mut self, reuse: bool) {
-        if let Err(_) = self.init().await {
-            self.send_to_engine(ToEngineMessage::Failed).await;
-            return;
-        }
-
         match self.start_download(reuse).await {
             Ok(Complete) => self.send_to_engine(ToEngineMessage::Completed).await,
             Ok(Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
@@ -126,12 +122,13 @@ impl HttpDownloadWorker {
     /// `reuse` indicates if this start method is called with a connection reuse intention.
     /// By Connection reuse we essentially mean when a worker has finished its download and is assigned
     /// a new byte range to download.
+    /// TODO: Reuse the client
     async fn start_download(&mut self, reuse: bool) -> Result<Status, DownloadError> {
         let client = HttpClient::new();
         if *self.status.lock().unwrap() == Starting {
             return Err(DownloadError::InvalidCommand);
         }
-        let req = self.build_request()?;
+        let req = self.build_request(reuse)?;
         if let Err(e) = self.init().await {
             println!("Failed to initialize download: {}", e);
             *self.status.lock().unwrap() = Status::Failed;
@@ -139,7 +136,7 @@ impl HttpDownloadWorker {
         }
         if let Ok(Stop) = self.from_engine_rx.try_recv() {
             println!("Download cancelled before start.");
-            *self.status.lock().unwrap() = Status::Stopped;
+            *self.status.lock().unwrap() = Stopped;
             return Ok(Stopped);
         }
         match client.send(req).await {
@@ -179,6 +176,27 @@ impl HttpDownloadWorker {
         }
     }
 
+    fn is_start_not_allowed(&self, reuse: bool, conn_reset: bool) -> bool {
+        if self.byte_range.start >= self.byte_range.end
+            || self.byte_range.start > self.download_info.file_size
+            || self.byte_range.end > self.download_info.file_size
+        {
+            println!(
+                "Invalid byte range: {}-{}. Skipping...",
+                self.byte_range.start, self.byte_range.end
+            );
+            return true;
+        }
+
+        if reuse {
+            return false;
+        }
+        matches!(
+            *self.status.lock().unwrap(),
+            Status::Downloading | Status::Connecting | Status::Starting
+        ) && !conn_reset
+    }
+
     async fn init(&mut self) -> Result<(), std::io::Error> {
         {
             *self.status.lock().unwrap() = Status::Connecting;
@@ -200,23 +218,42 @@ impl HttpDownloadWorker {
         }
     }
 
-    /// Adds the received bytes to the buffer and flushes to disk periodically
-    async fn process_chunk(&mut self, data: Frame<Bytes>) {
+    /// Adds the received bytes to the buffer and flushes to disk periodically.
+    /// Returns true of the download should terminate on this process cycle.
+    async fn process_chunk(&mut self, data: Frame<Bytes>) -> bool {
         {
             *self.status.lock().unwrap() = Status::Downloading;
         }
         let chunk = data.data_ref().unwrap().clone();
         let chunk_size = chunk.len() as u64;
-        println!("Received chunk of size: {}", data.data_ref().unwrap().len());
         self.update_received_bytes(chunk_size);
         self.calculate_speed(chunk_size);
         self.data_buffer.push(chunk);
         self.calculate_flush_threshold();
         self.update_download_progress();
         // if receivedbytes exceed end byte
+        if self.download_exceeded_end_byte() {
+            self.flush_buffer().await;
+
+            return true;
+        }
         if self.temp_bytes_received > self.buffer_flush_threshold {
             self.flush_buffer().await;
         }
+        false
+    }
+
+    /// Cuts the excess bytes from the downloaded temp files.
+    /// After the download has started, the engine might send a refresh byte range command which updates
+    /// the workers' assigned byte range. Since there is no way to customize the chunk sizes received
+    /// from the http client, we calculate and cut the excess bytes from the latest flushed buffer
+    /// which exceeded the newly assigned range.
+    fn cut_temp_files(&self) {
+       println!("Cutting temp files...");
+        let temp_files = self.temp_files_sorted(true);
+        // TODO add logging
+        let to_delete = vec!<>[];
+        
     }
 
     fn update_received_bytes(&mut self, len: u64) {
@@ -306,19 +343,20 @@ impl HttpDownloadWorker {
             worker_number: self.worker_number,
             size: temp_file_len,
         };
+        println!("Flushed buffer {}", file_meta.name);
         self.cached_temp_files.push(file_meta);
         self.total_request_bytes_received += temp_file_len;
         self.prev_buffer_end_byte += temp_file_len;
         self.reset_data_buffer();
     }
 
-    fn resolve_range(&self, reuse: bool) {
+    fn resolve_range(&self, reuse: bool) -> ByteRange {
         let req_start_byte = if reuse {
-            self.byte_range.start;
+            self.byte_range.start
         } else {
-            self.new_start_byte();
+            self.new_start_byte()
         };
-        println!("New start byte: {:?}", req_start_byte);
+        ByteRange::new(req_start_byte, self.byte_range.end)
     }
 
     /// Returns the next start byte to download. This is used for the pause/resume mechanism so that
@@ -365,15 +403,19 @@ impl HttpDownloadWorker {
         in_range
     }
 
-    pub fn build_request(&self) -> Result<Request<Empty<Bytes>>, http::Error> {
+    pub fn build_request(&self, reuse: bool) -> Result<Request<Empty<Bytes>>, http::Error> {
         let url = &self.download_info.url;
-        let range_header = self.byte_range.to_header();
+        let range_header = self.resolve_range(reuse).to_header();
         Ok(Request::builder()
             .method("GET")
             .uri(url)
             .header("User-Agent", "rust-hyper/1.0") // TODO proper user agent
             .header(range_header.0, range_header.1)
             .body(Empty::<Bytes>::new())?)
+    }
+
+    fn download_exceeded_end_byte(&self) -> bool {
+        self.byte_range.start + self.total_request_bytes_received + 1 > self.byte_range.end
     }
 
     fn temp_directory(&self) -> PathBuf {
