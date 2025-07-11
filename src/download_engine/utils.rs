@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TempFileMetadata {
     pub name: String,
+    pub path: PathBuf,
     pub start_byte: u64,
     pub end_byte: u64,
     pub worker_number: u8,
@@ -30,6 +31,7 @@ impl TempFileMetadata {
             start_byte,
             end_byte,
             name: name.to_string(),
+            path: path.clone(),
             size: meta.len(),
         }
     }

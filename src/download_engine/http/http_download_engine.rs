@@ -14,6 +14,7 @@ use std::time::Duration;
 pub enum EngineToWorkerMsg {
     Start,
     Stop,
+    Reset,
 }
 
 pub struct HttpDownloadEngine {
@@ -41,6 +42,7 @@ impl Runnable for HttpDownloadEngine {
             tokio::sync::mpsc::channel::<WorkerToEngineMsg>(100);
         let (engine_to_worker_tx, engine_to_worker_rx) =
             tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
+        println!("Total file size: {}", download_info.file_size);
 
         let status_arc = Arc::new(Mutex::new(Status::Initial));
         let progress_arc = Arc::new(Mutex::new(WorkerProgress::new()));
