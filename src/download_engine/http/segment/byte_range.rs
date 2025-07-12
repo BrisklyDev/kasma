@@ -1,7 +1,7 @@
 use hyper::header::RANGE;
 use std::fmt;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ByteRange {
     pub start: u64,
     pub end: u64,

@@ -15,7 +15,10 @@ pub enum EngineToWorkerMsg {
     Start,
     Stop,
     Reset,
+    RefreshSegment,
 }
+
+pub const MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN: u64 = 500000;
 
 pub struct HttpDownloadEngine {
     workers: Vec<Arc<Mutex<HttpDownloadWorker>>>,

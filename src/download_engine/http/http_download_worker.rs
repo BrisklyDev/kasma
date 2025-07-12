@@ -1,11 +1,14 @@
-use crate::download_engine::http::http_download_engine::EngineToWorkerMsg;
 use crate::download_engine::http::http_download_engine::EngineToWorkerMsg::*;
+use crate::download_engine::http::http_download_engine::{
+    EngineToWorkerMsg, MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN,
+};
+use crate::download_engine::http::http_download_worker::Status::RangeComplete;
 use crate::download_engine::http::segment::byte_range::ByteRange;
 use crate::download_engine::http::{ClientError, HttpClient};
 use crate::download_engine::utils::{TempFileMetadata, list_files_in_dir, now_millis};
 use crate::download_engine::{DownloadInfo, Runnable};
 use http_body_util::{BodyExt, Empty};
-use hyper::body::{Bytes, Frame};
+use hyper::body::{Bytes, Frame, Incoming};
 use hyper::{Request, http};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -105,11 +108,11 @@ impl Runnable for HttpDownloadWorker {
 }
 
 impl HttpDownloadWorker {
-    /// Tries downloading the file and sends the proper messages to the engine
     pub async fn try_download(&mut self, reuse: bool) {
         self.try_download_inner(reuse).await;
     }
 
+    /// Tries downloading the file and sends the proper messages to the engine.
     fn try_download_inner<'a>(&'a mut self, reuse: bool) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
         Box::pin(async move {
             match self.start_download(reuse).await {
@@ -121,6 +124,7 @@ impl HttpDownloadWorker {
             }
         })
     }
+
     /// Starts the download and retries if failed.
     /// The `from_engine_rx` is listened for any actions necessary inside the loop. The loop uses a
     /// `tokio:select` macro between the received chunk and messages from the engine to take actions
@@ -167,12 +171,12 @@ impl HttpDownloadWorker {
                                 }
                                 None => {
                                     println!("Download finished.");
-                                    match self.flush_buffer().await {
+                                    return match self.flush_buffer().await {
                                         Ok(_) => {
                                             self.set_download_complete();
-                                            return Ok(Status::Complete);
+                                            Ok(Status::Complete)
                                         }
-                                        Err(_) => return Err(DownloadError::ProcessChunk),
+                                        Err(_) => Err(DownloadError::ProcessChunk),
                                     }
                                 }
                             }
@@ -183,6 +187,9 @@ impl HttpDownloadWorker {
                                     println!("Cancel message received from engine. Exiting download...");
                                     *self.status.lock().unwrap() = Status::Stopped;
                                     return Ok(Status::Stopped);
+                                }
+                                RefreshSegment => {
+
                                 }
                                 Reset => {
                                     println!("Reset message received from engine. Exiting download...");
@@ -241,8 +248,52 @@ impl HttpDownloadWorker {
         }
     }
 
+    fn refresh_byte_range(
+        &mut self,
+        new_range: ByteRange,
+        reuse_connection: bool,
+    ) -> ToEngineMessage {
+        let prev_end_byte = self.byte_range.end;
+        if *self.status.lock().unwrap() == RangeComplete {
+            return ToEngineMessage::ByteRangeRefreshRefused {
+                requested_range: new_range,
+                reuse: reuse_connection,
+            };
+        }
+        if self.byte_range.start + self.total_request_bytes_received >= new_range.end {
+            let split_byte = (self.byte_range.end
+                - (self.byte_range.start + self.total_request_bytes_received))
+                / 2;
+            let new_end = split_byte + self.byte_range.start + self.total_request_bytes_received;
+            let new_valid_end = prev_end_byte;
+            let new_valid_start = self.byte_range.start;
+
+            if new_end > 0
+                && new_range.start < new_end
+                && new_valid_start + MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN < new_valid_end
+            {
+                self.byte_range = ByteRange::new(new_range.start, new_end);
+                return ToEngineMessage::ByteRangeRefreshOverlapped {
+                    new_valid_start_byte: self.byte_range.end + 1,
+                    new_valid_end_byte: prev_end_byte,
+                    refreshed_start_byte: self.byte_range.start,
+                    refreshed_end_byte: self.byte_range.end,
+                };
+            }
+
+            if split_byte <= 0 {
+                return ToEngineMessage::ByteRangeRefreshRefused {
+                    requested_range: new_range,
+                    reuse: reuse_connection,
+                };
+            }
+        }
+        todo!();
+    }
+
     /// Adds the received bytes to the buffer and flushes to disk periodically.
-    /// Returns true of the byte range has been downloaded and should terminate connection.
+    /// Returns true if the byte range has been downloaded and should terminate the connection.
+    /// TODO: Gracefully handle poisoned locks to send panic to the engine and recover
     async fn process_chunk(&mut self, data: Frame<Bytes>) -> anyhow::Result<bool> {
         {
             *self.status.lock().unwrap() = Status::Downloading;
@@ -575,15 +626,38 @@ pub struct WorkerToEngineMsg {
 #[derive(Debug)]
 pub enum ToEngineMessage {
     Completed,
+    ByteRangeRefreshSuccess {
+        requested_range: ByteRange,
+        reuse: bool,
+    },
+    ByteRangeRefreshRefused {
+        requested_range: ByteRange,
+        reuse: bool,
+    },
+    ByteRangeRefreshOverlapped {
+        new_valid_start_byte: u64,
+        new_valid_end_byte: u64,
+        refreshed_start_byte: u64,
+        refreshed_end_byte: u64,
+    },
     Stopped,
     Failed,
 }
 
+/// Initial: The worker has not yet started a download
+/// Stopped: Download is paused
+/// Complete: The total download is complete
+/// RangeComplete: The designated range has been fully downloaded
+/// Resetting: The connection is being reset
+/// Starting: The download is starting
+/// Connecting: Connecting to server (no data has been received yet)
+/// Failed: Download has failed
 #[derive(PartialEq)]
 pub enum Status {
     Initial,
     Stopped,
     Complete,
+    RangeComplete,
     Resetting,
     Downloading,
     Starting,
