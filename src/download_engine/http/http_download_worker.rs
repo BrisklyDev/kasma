@@ -1,14 +1,14 @@
+use crate::download_engine::http::byte_range::ByteRange;
 use crate::download_engine::http::http_download_engine::EngineToWorkerMsg::*;
 use crate::download_engine::http::http_download_engine::{
     EngineToWorkerMsg, MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN,
 };
 use crate::download_engine::http::http_download_worker::Status::RangeComplete;
-use crate::download_engine::http::segment::byte_range::ByteRange;
 use crate::download_engine::http::{ClientError, HttpClient};
 use crate::download_engine::utils::{TempFileMetadata, list_files_in_dir, now_millis};
 use crate::download_engine::{DownloadInfo, Runnable};
 use http_body_util::{BodyExt, Empty};
-use hyper::body::{Bytes, Frame, Incoming};
+use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -188,8 +188,9 @@ impl HttpDownloadWorker {
                                     *self.status.lock().unwrap() = Status::Stopped;
                                     return Ok(Status::Stopped);
                                 }
-                                RefreshSegment => {
-
+                                RefreshSegment(new_range, reuse) => {
+                                    let result = self.refresh_byte_range(new_range, reuse);
+                                    self.send_to_engine(result).await;
                                 }
                                 Reset => {
                                     println!("Reset message received from engine. Exiting download...");
@@ -279,16 +280,26 @@ impl HttpDownloadWorker {
                     refreshed_start_byte: self.byte_range.start,
                     refreshed_end_byte: self.byte_range.end,
                 };
-            }
-
-            if split_byte <= 0 {
+            } else {
                 return ToEngineMessage::ByteRangeRefreshRefused {
                     requested_range: new_range,
                     reuse: reuse_connection,
                 };
             }
         }
-        todo!();
+        if new_range.start >= new_range.end || new_range.start + 1 >= new_range.end {
+            return ToEngineMessage::ByteRangeRefreshRefused {
+                requested_range: new_range,
+                reuse: reuse_connection,
+            };
+        }
+
+        self.byte_range = new_range;
+        return ToEngineMessage::ByteRangeRefreshSuccess {
+            refreshed_start_byte: self.byte_range.start,
+            refreshed_end_byte: self.byte_range.end,
+            reuse: reuse_connection,
+        };
     }
 
     /// Adds the received bytes to the buffer and flushes to disk periodically.
@@ -627,7 +638,8 @@ pub struct WorkerToEngineMsg {
 pub enum ToEngineMessage {
     Completed,
     ByteRangeRefreshSuccess {
-        requested_range: ByteRange,
+        refreshed_start_byte: u64,
+        refreshed_end_byte: u64,
         reuse: bool,
     },
     ByteRangeRefreshRefused {

@@ -11,9 +11,9 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
 
+pub mod byte_range;
 pub mod http_download_engine;
 pub mod http_download_worker;
-pub mod segment;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -149,7 +149,6 @@ pub struct FileInfo {
 pub async fn fetch_file_info(url: &str) -> Result<FileInfo, Box<dyn std::error::Error>> {
     let uri: Uri = url.parse()?;
     let client = HttpClient::new();
-    // Construct base request builder
     let make_req = |method: &str| {
         Request::builder()
             .method(method)
@@ -162,12 +161,10 @@ pub async fn fetch_file_info(url: &str) -> Result<FileInfo, Box<dyn std::error::
     let mut file_size = extract_content_length(&resp);
     let mut file_name = extract_file_name(&resp);
     let mut supports_range = extract_range_support(&resp);
-    // If important headers are missing, retry with GET
     if file_size.is_none() && file_name.is_none() && !supports_range {
         let get_resp = client.send(make_req("GET")?).await?;
         resp = get_resp;
 
-        // Re-extract
         file_size = extract_content_length(&resp);
         file_name = extract_file_name(&resp);
         supports_range = extract_range_support(&resp);
@@ -178,7 +175,7 @@ pub async fn fetch_file_info(url: &str) -> Result<FileInfo, Box<dyn std::error::
         headers: HashMap::new(),
         file_name: file_name
             .or_else(|| extract_file_name_from_url(url))
-            .unwrap(), // TODO fix
+            .unwrap(), // TODO: fix
         file_size: file_size.expect("REASON"),
         supports_range,
     })

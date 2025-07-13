@@ -1,4 +1,4 @@
-use crate::download_engine::http::segment::byte_range::ByteRange;
+use crate::download_engine::http::byte_range::ByteRange;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};

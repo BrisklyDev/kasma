@@ -1,3 +1,5 @@
+pub mod byte_range_tree;
+
 use hyper::header::RANGE;
 use std::fmt;
 
@@ -23,7 +25,7 @@ impl ByteRange {
     pub fn is_valid(&self) -> bool {
         self.start != self.end && self.start < self.end && self.start + 1 < self.end
     }
-    
+
     pub fn len(&self) -> u64 {
         self.end - self.start + 1
     }
@@ -46,4 +48,14 @@ impl fmt::Display for ByteRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ByteRange::{}-{}", self.start, self.end)
     }
+}
+
+pub enum ByteRangeStatus {
+    Initial,
+    RefreshRequested,
+    InUse,
+    InQueue,
+    ReuseRequested,
+    Outdated,
+    Complete,
 }
