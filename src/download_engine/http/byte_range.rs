@@ -49,13 +49,3 @@ impl fmt::Display for ByteRange {
         write!(f, "ByteRange::{}-{}", self.start, self.end)
     }
 }
-
-pub enum ByteRangeStatus {
-    Initial,
-    RefreshRequested,
-    InUse,
-    InQueue,
-    ReuseRequested,
-    Outdated,
-    Complete,
-}
