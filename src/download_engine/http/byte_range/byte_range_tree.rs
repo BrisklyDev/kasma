@@ -331,8 +331,36 @@ impl ByteRangeTree {
             }
         };
         self.split_byte_range_node(&node, true)?;
-        if node.borrow().range == self.root.borrow().range {
+        if Rc::ptr_eq(&node, &self.root) {
             return Ok(());
+        }
+
+        let mut current_neighbor = Rc::clone(&node);
+
+        loop {
+            let is_complete;
+            let next = {
+                let neighbor_ref = current_neighbor.borrow();
+                is_complete = neighbor_ref.status == ByteRangeStatus::Complete;
+                neighbor_ref.right_neighbor.as_ref().cloned()
+            };
+            if is_complete {
+                match next {
+                    Some(next_rc) => {
+                        current_neighbor = next_rc;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+
+            self.split_byte_range_node(&current_neighbor, true)?;
+            node.borrow_mut()
+                .right_child
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .right_neighbor = current_neighbor.borrow().left_child.clone();
         }
 
         Ok(())
