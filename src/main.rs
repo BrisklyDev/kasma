@@ -1,19 +1,30 @@
-use std::thread;
 use hyper::header::RANGE;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::thread;
 use tokio::runtime::Runtime;
 
+use crate::download_engine::http::byte_range::ByteRange;
+use crate::download_engine::http::byte_range::byte_range_tree::{ByteRangeNode, ByteRangeTree};
 use crate::download_engine::{Runnable, http::http_download_engine::HttpDownloadEngine};
 
 pub mod download_engine;
 
-#[tokio::main]
-async fn main() {
-    // Example: spawn thread per download
-    let handle = thread::spawn(move || {
-        let mut engine = HttpDownloadEngine::new();
-        engine.run();
-    });
-    handle.join().unwrap();
+fn main() {
+    println!(
+        "Building tree for total size {} and with missing bytes of {}",
+        600000, "30-70, 300-600, 900-1500"
+    );
+    let tree = ByteRangeTree::new_from_missing_bytes(
+        600000,
+        8,
+        Vec::from([
+            ByteRange::new(30, 70),
+            ByteRange::new(300, 600),
+            ByteRange::new(900, 1500),
+        ]),
+    );
+    println!("{}", tree);
 }
 
 // fn spawn_engine<T: Engine>(engine: &T) -> thread::JoinHandle<()> {

@@ -1,8 +1,10 @@
 use crate::download_engine::http::byte_range::ByteRange;
 use std::cell::RefCell;
 use std::cmp::PartialEq;
+use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
+use strum_macros::{Display, EnumString};
 
 type NodeRef = Rc<RefCell<ByteRangeNode>>;
 type WeakNodeRef = Weak<RefCell<ByteRangeNode>>;
@@ -101,7 +103,7 @@ impl ByteRangeTree {
         let mut iteration_root = root_ref.right_child.clone().unwrap();
         let mut current_max_worker_num: i8 = -1;
         while !missing_ranges_clone.is_empty() {
-            let current_missing = &missing_ranges_clone[0];
+            let current_missing = missing_ranges_clone[0].clone();
             let mut exceeded_max_worker_num = false;
             let mut iteration_root_ref = iteration_root.borrow_mut();
             if iteration_root_ref.range.start == current_missing.start {
@@ -120,6 +122,11 @@ impl ByteRangeTree {
                     status,
                     current_max_worker_num as u8,
                 );
+                let idx = missing_ranges_clone
+                    .iter()
+                    .position(|x| *x == current_missing)
+                    .unwrap();
+                missing_ranges_clone.remove(idx);
             } else {
                 let l_child_start = iteration_root_ref.range.start;
                 iteration_root_ref.create_left_child(
@@ -135,11 +142,21 @@ impl ByteRangeTree {
                 ByteRangeStatus::Outdated
             };
 
-            iteration_root_ref.create_right_child(
-                ByteRange::new(current_missing.start, total_size),
-                status,
-                0,
-            );
+            {
+                let new_start = iteration_root_ref
+                    .left_child
+                    .as_ref()
+                    .unwrap()
+                    .borrow()
+                    .range
+                    .end
+                    + 1;
+                iteration_root_ref.create_right_child(
+                    ByteRange::new(new_start, total_size),
+                    status,
+                    0,
+                );
+            }
 
             if let Some(right_child_rc) = iteration_root_ref.right_child.as_ref() {
                 right_child_rc.borrow_mut().left_neighbor =
@@ -365,6 +382,45 @@ impl ByteRangeTree {
 
         Ok(())
     }
+
+    fn build_tree_str(&self, node: &NodeRef, prefix: String, is_last: bool, buffer: &mut String) {
+        let connector = if is_last { "└──" } else { "├──" };
+        let node_ref = node.borrow();
+        let range = &node_ref.range;
+        let worker = node_ref.worker_number;
+        let status = node_ref.status;
+        buffer.push_str(
+            format!(
+                "{}{} [{}-{}] (status: {}, worker: {})",
+                prefix, connector, range.start, range.end, status, worker
+            )
+            .as_str(),
+        );
+        buffer.push('\n');
+
+        let children: Vec<&NodeRef> = [node_ref.left_child.as_ref(), node_ref.right_child.as_ref()]
+            .into_iter()
+            .flatten()
+            .collect();
+
+        for i in 0..children.len() {
+            let mut new_prefix = prefix.clone();
+            if is_last {
+                new_prefix.push_str("    ");
+            } else {
+                new_prefix.push_str("│   ");
+            }
+            self.build_tree_str(children[i], new_prefix, i == children.len() - 1, buffer);
+        }
+    }
+}
+
+impl Display for ByteRangeTree {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut buffer = String::new();
+        self.build_tree_str(&self.root, "".to_string(), true, &mut buffer);
+        f.write_str(&buffer)
+    }
 }
 
 pub struct ByteRangeNode {
@@ -424,7 +480,7 @@ impl ByteRangeNode {
     }
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Display, EnumString)]
 pub enum ByteRangeStatus {
     Initial,
     RefreshRequested,
