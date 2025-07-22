@@ -21,7 +21,6 @@ fn main() {
         Vec::from([
             ByteRange::new(30, 70),
             ByteRange::new(300, 600),
-            ByteRange::new(900, 1500),
         ]),
     );
     println!("{}", tree);

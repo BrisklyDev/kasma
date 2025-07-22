@@ -40,6 +40,25 @@ impl ByteRangeTree {
         }
     }
 
+    /// Builds a tree from missing byte ranges
+    /// Example tree for a byte range with total_size of 600000 and missing_ranges of 30-70, 300-600:
+    /// [0-600000] (status: Outdated, worker: 0)
+    ///     ├── [0-29] (status: Complete, worker: 0)
+    ///     └── [30-600000] (status: Outdated, worker: 1)
+    ///         ├── [30-70] (status: Initial, worker: 0)
+    ///         └── [71-600000] (status: Outdated, worker: 0)
+    ///            ├── [71-299] (status: Complete, worker: 0)
+    ///            └── [300-600000] (status: Outdated, worker: 0)
+    ///                 ├── [300-600] (status: Initial, worker: 1)
+    ///                 └── [601-600000] (status: Complete, worker: 0)
+    ///
+    /// Status Initial: Missing nodes (to be downloaded)
+    /// Status Complete: Nodes with ranges that already exist (not missing)
+    /// Status Outdated: Parent nodes
+    /// Status InQueue: Missing nodes (to be downloaded) with the difference being that InQueue
+    /// is set in cases where there already exist a maximum number (max_worker_number) of nodes created
+    /// with status Initial. Therefore, those initial nodes are assigned to workers, and when finished,
+    /// the engine takes new ranges from the InQueue status to assign to workers.
     pub fn new_from_missing_bytes(
         total_size: u64,
         max_worker_num: u8,
@@ -68,7 +87,8 @@ impl ByteRangeTree {
                 0,
             );
         }
-
+        
+        root_ref.status = ByteRangeStatus::Outdated;
         root_ref.worker_number = 0;
         let right_child_start = root_ref.left_child.as_ref().unwrap().borrow().range.end + 1;
         root_ref.create_right_child(
