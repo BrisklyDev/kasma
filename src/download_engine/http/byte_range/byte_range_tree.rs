@@ -40,32 +40,24 @@ impl ByteRangeTree {
         }
     }
 
-    /// Builds a tree from missing byte ranges
+    /// Builds a tree from missing byte ranges, and assigns proper worker numbers and statuses
     /// Example tree for a byte range with total_size of 600000 and missing_ranges of 30-70, 300-600:
-    /// [0-600000] (status: Outdated, worker: 0)
+    ///  [0-600000] (status: Outdated, worker: 0)
     ///     ├── [0-29] (status: Complete, worker: 0)
     ///     └── [30-600000] (status: Outdated, worker: 1)
-    ///         ├── [30-70] (status: Initial, worker: 0)
+    ///         ├── [30-70] (status: ToDownload, worker: 0)
     ///         └── [71-600000] (status: Outdated, worker: 0)
-    ///            ├── [71-299] (status: Complete, worker: 0)
-    ///            └── [300-600000] (status: Outdated, worker: 0)
-    ///                 ├── [300-600] (status: Initial, worker: 1)
+    ///             ├── [71-299] (status: Complete, worker: 0)
+    ///             └── [300-600000] (status: Outdated, worker: 0)
+    ///                 ├── [300-600] (status: ToDownload, worker: 1)
     ///                 └── [601-600000] (status: Complete, worker: 0)
-    ///
-    /// Status Initial: Missing nodes (to be downloaded)
-    /// Status Complete: Nodes with ranges that already exist (not missing)
-    /// Status Outdated: Parent nodes
-    /// Status InQueue: Missing nodes (to be downloaded) with the difference being that InQueue
-    /// is set in cases where there already exist a maximum number (max_worker_number) of nodes created
-    /// with status Initial. Therefore, those initial nodes are assigned to workers, and when finished,
-    /// the engine takes new ranges from the InQueue status to assign to workers.
     pub fn new_from_missing_bytes(
         total_size: u64,
         max_worker_num: u8,
         missing_ranges: Vec<ByteRange>,
     ) -> Self {
         let full_range = ByteRange::new(0, total_size);
-        let root = ByteRangeNode::new(full_range, ByteRangeStatus::Initial, 0);
+        let root = ByteRangeNode::new(full_range, ByteRangeStatus::ToDownload, 0);
         let mut tree = Self::new(root, max_worker_num);
         let first_range = missing_ranges[0].clone();
         if missing_ranges.len() == 1 && first_range.start == 0 && first_range.end == total_size - 1
@@ -83,11 +75,11 @@ impl ByteRangeTree {
         } else {
             root_ref.create_left_child(
                 ByteRange::new(0, first_range.end),
-                ByteRangeStatus::Initial,
+                ByteRangeStatus::ToDownload,
                 0,
             );
         }
-        
+
         root_ref.status = ByteRangeStatus::Outdated;
         root_ref.worker_number = 0;
         let right_child_start = root_ref.left_child.as_ref().unwrap().borrow().range.end + 1;
@@ -133,9 +125,9 @@ impl ByteRangeTree {
                     current_max_worker_num += 1;
                 }
                 let status = if exceeded_max_worker_num {
-                    ByteRangeStatus::InQueue
+                    ByteRangeStatus::ToDownloadInQueue
                 } else {
-                    ByteRangeStatus::Initial
+                    ByteRangeStatus::ToDownload
                 };
                 iteration_root_ref.create_left_child(
                     current_missing.clone(),
@@ -157,7 +149,7 @@ impl ByteRangeTree {
             }
 
             let status = if exceeded_max_worker_num {
-                ByteRangeStatus::InQueue
+                ByteRangeStatus::ToDownloadInQueue
             } else {
                 ByteRangeStatus::Outdated
             };
@@ -247,7 +239,7 @@ impl ByteRangeTree {
         let mut initial_nodes: Vec<NodeRef> = tree
             .lowest_level_nodes
             .iter()
-            .filter(|x| x.borrow().status == ByteRangeStatus::Initial)
+            .filter(|x| x.borrow().status == ByteRangeStatus::ToDownload)
             .cloned()
             .collect();
 
@@ -264,7 +256,7 @@ impl ByteRangeTree {
             initial_nodes = tree
                 .lowest_level_nodes
                 .iter()
-                .filter(|x| x.borrow().status == ByteRangeStatus::Initial)
+                .filter(|x| x.borrow().status == ByteRangeStatus::ToDownload)
                 .cloned()
                 .collect();
             for node in initial_nodes {
@@ -317,8 +309,16 @@ impl ByteRangeTree {
         }
 
         let mut node_ref = node.borrow_mut();
-        node_ref.right_child = Some(ByteRangeNode::new(range_right, ByteRangeStatus::Initial, 0));
-        node_ref.left_child = Some(ByteRangeNode::new(range_left, ByteRangeStatus::Initial, 0));
+        node_ref.right_child = Some(ByteRangeNode::new(
+            range_right,
+            ByteRangeStatus::ToDownload,
+            0,
+        ));
+        node_ref.left_child = Some(ByteRangeNode::new(
+            range_left,
+            ByteRangeStatus::ToDownload,
+            0,
+        ));
 
         {
             let mut left_child_ref = node_ref.left_child.as_ref().unwrap().borrow_mut();
@@ -500,12 +500,19 @@ impl ByteRangeNode {
     }
 }
 
+/// Status ToDownload: Missing nodes (to be downloaded)
+/// Status Complete: Nodes with ranges that already exist (not missing)
+/// Status Outdated: Nodes that have been split and are now outdated
+/// Status ToDownloadInQueue: Missing nodes (to be downloaded) with the difference being that InQueue
+/// is set in cases where there already exist a maximum number (max_worker_number) of nodes created
+/// with status ToDownload. Therefore, those initial nodes are assigned to workers, and when finished,
+/// the engine takes new ranges from the ToDownloadInQueue status to assign to workers.
 #[derive(PartialEq, Copy, Clone, Display, EnumString)]
 pub enum ByteRangeStatus {
-    Initial,
+    ToDownload,
     RefreshRequested,
     InUse,
-    InQueue,
+    ToDownloadInQueue,
     ReuseRequested,
     Outdated,
     Complete,
