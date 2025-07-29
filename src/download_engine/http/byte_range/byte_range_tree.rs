@@ -26,9 +26,9 @@ type WeakNodeRef = Weak<RefCell<ByteRangeNode>>;
 ///     ├── [501–750]
 ///     └── [751–1000]
 pub struct ByteRangeTree {
-    root: NodeRef,
-    max_worker_num: u8,
-    lowest_level_nodes: Vec<NodeRef>,
+    pub root: NodeRef,
+    pub max_worker_num: u8,
+    pub lowest_level_nodes: Vec<NodeRef>,
 }
 
 impl ByteRangeTree {
@@ -279,34 +279,37 @@ impl ByteRangeTree {
         tree
     }
 
-    fn split_byte_range_node(
+    pub fn split_byte_range_node(
         &mut self,
         node: &NodeRef,
         set_worker_num: bool,
     ) -> Result<(), String> {
-        let node_range = &node.borrow().range;
+        let node_range = node.borrow().range.clone();
         let split_byte = (node_range.end - node_range.start) / 2;
         if split_byte == 0 {
             return Err("Split byte is zero".to_string());
         }
-        let range_left: ByteRange;
-        let range_right: ByteRange;
 
-        if node_range.start > split_byte {
-            let end_byte = split_byte + node_range.start;
-            range_left = ByteRange::new(node_range.start, end_byte);
-            range_right = ByteRange::new(end_byte + 1, node_range.end);
-        } else {
-            range_left = ByteRange::new(node_range.start, split_byte);
-            range_right = ByteRange::new(split_byte + 1, node_range.end);
-        }
-        if !range_left.is_valid()
-            || !range_right.is_valid()
-            || range_left.len() < 8192
-            || range_right.len() < 8192
-        {
-            return Err("range was invalid".to_string());
-        }
+        let (range_left, range_right) = {
+            let range_left: ByteRange;
+            let range_right: ByteRange;
+            if node_range.start > split_byte {
+                let end_byte = split_byte + node_range.start;
+                range_left = ByteRange::new(node_range.start, end_byte);
+                range_right = ByteRange::new(end_byte + 1, node_range.end);
+            } else {
+                range_left = ByteRange::new(node_range.start, split_byte);
+                range_right = ByteRange::new(split_byte + 1, node_range.end);
+            }
+            if !range_left.is_valid()
+                || !range_right.is_valid()
+                || range_left.len() < 8192
+                || range_right.len() < 8192
+            {
+                return Err("range was invalid".to_string());
+            }
+            (range_left, range_right)
+        };
 
         let mut node_ref = node.borrow_mut();
         node_ref.right_child = Some(ByteRangeNode::new(
@@ -356,7 +359,7 @@ impl ByteRangeTree {
         Ok(())
     }
 
-    fn split(&mut self) -> Result<(), String> {
+    pub fn split(&mut self) -> Result<(), String> {
         let node = {
             let mut node = Rc::clone(&self.root);
             loop {

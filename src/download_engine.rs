@@ -1,6 +1,5 @@
 use crate::download_engine::http::FileInfo;
 use std::collections::HashMap;
-use std::thread;
 use uuid::Uuid;
 
 pub mod http;
@@ -12,7 +11,7 @@ pub struct Setting {
 }
 
 #[derive(Clone)]
-pub struct DownloadInfo {
+pub struct DownloadItem {
     uid: String,
     url: String,
     headers: HashMap<String, String>,
@@ -21,7 +20,7 @@ pub struct DownloadInfo {
     file_name: String,
 }
 
-impl DownloadInfo {
+impl DownloadItem {
     pub fn from(file_info: &FileInfo) -> Self {
         Self {
             uid: Uuid::new_v4().to_string(),
@@ -40,7 +39,7 @@ pub struct NetworkProxy {
     password: String,
 }
 
-pub trait Runnable: Send {
+pub trait RunnableTask {
     fn run(&mut self);
 }
 

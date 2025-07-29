@@ -70,3 +70,13 @@ pub fn list_files_in_dir(dir: PathBuf) -> io::Result<Vec<PathBuf>> {
     }
     Ok(files)
 }
+
+pub fn list_temp_files_sorted(dir: PathBuf) -> io::Result<Vec<TempFileMetadata>> {
+    let files = list_files_in_dir(dir)?;
+    let mut files_sorted = files
+        .iter()
+        .map(|f| TempFileMetadata::from_path_buf(f))
+        .collect::<Vec<TempFileMetadata>>();
+    files_sorted.sort_by(|a, b| a.start_byte.cmp(&b.start_byte));
+    Ok(files_sorted)
+}

@@ -4,9 +4,10 @@ use crate::download_engine::http::http_download_engine::{
     EngineToWorkerMsg, MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN,
 };
 use crate::download_engine::http::http_download_worker::Status::RangeComplete;
+use crate::download_engine::http::message::{ToEngineMessage, WorkerToEngineMsg};
 use crate::download_engine::http::{ClientError, HttpClient};
 use crate::download_engine::utils::{TempFileMetadata, list_files_in_dir, now_millis};
-use crate::download_engine::{DownloadInfo, Runnable};
+use crate::download_engine::{DownloadItem, RunnableTask};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
@@ -29,7 +30,7 @@ const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 /// receive messages respectively.
 pub struct HttpDownloadWorker {
     pub worker_number: u8,
-    download_info: DownloadInfo,
+    download_info: DownloadItem,
     byte_range: ByteRange,
     data_buffer: Vec<Bytes>,
     speed_check_bytes: u64,
@@ -49,7 +50,8 @@ pub struct HttpDownloadWorker {
 
 impl HttpDownloadWorker {
     pub fn new(
-        info: DownloadInfo,
+        worker_number: u8,
+        info: DownloadItem,
         byte_range: ByteRange,
         to_engine_tx: Sender<WorkerToEngineMsg>,
         from_engine_rx: Receiver<EngineToWorkerMsg>,
@@ -58,7 +60,7 @@ impl HttpDownloadWorker {
     ) -> Self {
         HttpDownloadWorker {
             download_info: info,
-            worker_number: 0,
+            worker_number,
             byte_range,
             data_buffer: vec![],
             speed_check_bytes: 0,
@@ -78,7 +80,7 @@ impl HttpDownloadWorker {
     }
 }
 
-impl Runnable for HttpDownloadWorker {
+impl RunnableTask for HttpDownloadWorker {
     fn run(&mut self) {
         println!("Spawned download thread");
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -626,34 +628,6 @@ async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32
         delay_secs = 2;
     }
     tokio::time::sleep(Duration::from_secs(delay_secs as u64)).await;
-}
-
-#[derive(Debug)]
-pub struct WorkerToEngineMsg {
-    worker_number: u8,
-    message: ToEngineMessage,
-}
-
-#[derive(Debug)]
-pub enum ToEngineMessage {
-    Completed,
-    ByteRangeRefreshSuccess {
-        refreshed_start_byte: u64,
-        refreshed_end_byte: u64,
-        reuse: bool,
-    },
-    ByteRangeRefreshRefused {
-        requested_range: ByteRange,
-        reuse: bool,
-    },
-    ByteRangeRefreshOverlapped {
-        new_valid_start_byte: u64,
-        new_valid_end_byte: u64,
-        refreshed_start_byte: u64,
-        refreshed_end_byte: u64,
-    },
-    Stopped,
-    Failed,
 }
 
 /// Initial: The worker has not yet started a download

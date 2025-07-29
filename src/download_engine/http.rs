@@ -14,6 +14,7 @@ use std::time::Duration;
 pub mod byte_range;
 pub mod http_download_engine;
 pub mod http_download_worker;
+pub mod message;
 
 #[derive(Debug)]
 pub enum ClientError {
