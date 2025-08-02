@@ -1,18 +1,24 @@
 use crate::download_engine::http::byte_range::ByteRange;
 use crate::download_engine::http::byte_range::byte_range_tree::ByteRangeTree;
-use crate::download_engine::http::http_download_worker::{Status, WorkerProgress};
+use crate::download_engine::http::fetch_file_info;
+use crate::download_engine::http::http_download_worker::Status;
 use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg, WorkerToEngineMsg};
-use crate::download_engine::http::{FileInfo, fetch_file_info};
-use crate::download_engine::utils::{TempFileMetadata, list_temp_files_sorted};
+use crate::download_engine::http::progress::{DownloadProgress, WorkerProgress};
+use crate::download_engine::utils::file::{
+    TempFileMetadata, list_temp_files_sorted, resolve_versioned_file_path,
+};
 use crate::download_engine::{
-    DownloadItem, RunnableTask, http::http_download_worker::HttpDownloadWorker,
+    DownloadInfo, DownloadItem, DownloadSetting, RunnableTask,
+    http::http_download_worker::HttpDownloadWorker,
 };
 use std::collections::HashMap;
-use std::iter::Map;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::{fs, thread};
 use tokio::sync::mpsc::{Receiver, Sender};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum EngineToWorkerMsg {
@@ -26,10 +32,12 @@ pub const MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN: u64 = 500000;
 
 pub struct HttpDownloadEngine {
     download_item: DownloadItem,
+    setting: DownloadSetting,
     from_main_rx: Receiver<DownloadCommand>,
     to_main_rx: Sender<EngineToMainMsg>,
     byte_range_tree: Option<ByteRangeTree>,
     workers: HashMap<u8, DownloadWorkerHandle>,
+    progress: DownloadProgress,
 }
 
 pub struct DownloadWorkerHandle {
@@ -55,27 +63,72 @@ impl HttpDownloadEngine {
     pub fn new(
         from_main_rx: Receiver<DownloadCommand>,
         to_main_rx: Sender<EngineToMainMsg>,
-    ) -> Self {
-        HttpDownloadEngine {
-            from_main_rx,
-            to_main_rx,
-            byte_range_tree: None,
-            workers: HashMap::new(),
-        }
+        info: DownloadInfo,
+        setting: DownloadSetting,
+        output_file_name_override: Option<String>,
+    ) -> (HttpDownloadEngine, String) {
+        let uid = if info.uid.is_some() {
+            info.uid.unwrap()
+        } else {
+            Uuid::new_v4().to_string()
+        };
+        let item = DownloadItem {
+            uid: uid.clone(),
+            url: info.url,
+            prefetched_info: info.file_size.is_some() && info.supports_range.is_some(),
+            headers: HashMap::new(),
+            supports_range: if info.supports_range.is_some() {
+                info.supports_range.unwrap()
+            } else {
+                false
+            },
+            file_size: if info.file_size.is_some() {
+                info.file_size.unwrap()
+            } else {
+                0
+            },
+            file_name: if output_file_name_override.is_some() {
+                output_file_name_override.unwrap()
+            } else if info.filename.is_some() {
+                info.filename.unwrap()
+            } else {
+                "".to_string()
+            },
+        };
+        (
+            HttpDownloadEngine {
+                setting,
+                download_item: item,
+                from_main_rx,
+                to_main_rx,
+                byte_range_tree: None,
+                workers: HashMap::new(),
+                progress: DownloadProgress::new(),
+            },
+            uid,
+        )
     }
 
     async fn run_async(&mut self) {
-        let file_info = self.fetch_file_info();
-        let download_item = DownloadItem::from(&file_info);
-        let range = ByteRange::new(0, download_item.file_size);
+        if !self.download_item.prefetched_info {
+            // TODO: error handling
+            let info = fetch_file_info(self.download_item.url.clone())
+                .await
+                .unwrap();
+            self.download_item.file_size = info.file_size;
+            self.download_item.supports_range = info.supports_range;
+            if self.download_item.file_name.is_empty() {
+                self.download_item.file_name = info.file_name;
+            }
+        }
+        let range = ByteRange::new(0, self.download_item.file_size);
         let (worker_to_engine_tx, worker_to_engine_rx) =
             tokio::sync::mpsc::channel::<WorkerToEngineMsg>(100);
         let (engine_to_worker_tx, engine_to_worker_rx) =
             tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
-        println!("Total file size: {}", download_item.file_size);
-
+        println!("Total file size: {}", self.download_item.file_size);
         match self.from_main_rx.recv().await.unwrap() {
-            DownloadCommand::Start => self.handle_start().await,
+            DownloadCommand::Start => self.handle_start().await.unwrap(), // TODO: handle error
             DownloadCommand::Pause => {}
         }
 
@@ -91,25 +144,28 @@ impl HttpDownloadEngine {
         let handle = {
             let mut worker = HttpDownloadWorker::new(
                 0,
-                download_item.clone(),
+                self.download_item.clone(),
                 range,
                 worker_to_engine_tx,
                 engine_to_worker_rx,
                 status_arc.clone(),
                 progress_arc.clone(),
             );
-            thread::spawn(move || {
-                worker.run();
-            })
+            thread::spawn(move || worker.run())
         };
         handle.join().unwrap();
     }
 
-    async fn handle_start(&mut self) {
+    async fn handle_start(&mut self) -> anyhow::Result<()> {
         if self.workers.is_empty() {
-            self.validate_temp_files_integrity();
-            self.find_missing_byte_ranges();
+            self.validate_temp_files_integrity(true, true, false)?;
+            let missing_ranges = self.find_missing_byte_ranges()?;
+            if missing_ranges.is_empty() && self.is_assemble_eligible() {
+                self.assemble_file()?;
+                return Ok(());
+            }
         }
+        Ok(())
     }
 
     /// Checks the temp files' integrity and optionally deletes corrupted files by checking for missing
@@ -121,7 +177,8 @@ impl HttpDownloadEngine {
         delete_corrupted: bool,
         restart_engine_on_corrupted: bool,
     ) -> anyhow::Result<()> {
-        let temp_files = list_temp_files_sorted(PathBuf::from("/tmp/brisk/"))?;
+        let temp_files =
+            list_temp_files_sorted(self.setting.base_temp_dir.join(&self.download_item.uid))?;
         if temp_files.is_empty() {
             return Ok(());
         }
@@ -144,7 +201,7 @@ impl HttpDownloadEngine {
             let next_file = &temp_files[idx + 1];
             if next_file.start_byte - curr_file.end_byte == 2 {
                 files_to_delete.push(curr_file);
-                if idx - 1 < 0 {
+                if idx == 0 {
                     files_to_delete.push(next_file);
                 } else {
                     files_to_delete.push(&temp_files[idx - 1]);
@@ -190,18 +247,89 @@ impl HttpDownloadEngine {
         Ok(())
     }
 
-    fn find_missing_byte_ranges(&self) {
+    fn find_missing_byte_ranges(&self) -> anyhow::Result<Vec<ByteRange>> {
+        let temp_dir_path =
+            PathBuf::from(&self.setting.base_temp_dir).join(&self.download_item.uid);
+        let mut temp_files: Vec<TempFileMetadata> = vec![];
+        if temp_dir_path.is_dir() {
+            temp_files = list_temp_files_sorted(temp_dir_path)?;
+        }
+        if temp_files.is_empty() {
+            return Ok(vec![ByteRange::new(0, self.download_item.file_size)]);
+        }
+
+        let mut missing_ranges: Vec<ByteRange> = vec![];
+        for idx in 0..temp_files.len() {
+            let curr_file = &temp_files[idx];
+            if idx == 0 {
+                if curr_file.start_byte != 0 {
+                    missing_ranges.push(ByteRange::new(curr_file.start_byte, curr_file.end_byte));
+                }
+                continue;
+            }
+            let prev_file = &temp_files[idx - 1];
+            if prev_file.end_byte + 1 != curr_file.start_byte {
+                missing_ranges.push(ByteRange::new(
+                    prev_file.end_byte + 1,
+                    curr_file.start_byte - 1,
+                ));
+            }
+            if idx == temp_files.len() - 1 && curr_file.end_byte != self.download_item.file_size - 1
+            {
+                missing_ranges.push(ByteRange::new(
+                    curr_file.start_byte + 1,
+                    self.download_item.file_size,
+                ));
+            }
+        }
+
+        missing_ranges.sort_by(|a, b| a.start.cmp(&b.start));
+        Ok(missing_ranges)
+    }
+
+    fn is_assemble_eligible(&self) -> bool {
         todo!()
     }
 
-    fn fetch_file_info(&self) -> FileInfo {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(fetch_file_info(
-                "https://github.com/BrisklyDev/brisk/releases/download/v2.3.2/Brisk-v2.3.2-macos.dmg",
-            ))
-            .expect("Failed to fetch file info")
+    fn assemble_file(&self) -> anyhow::Result<bool> {
+        let temp_files = list_temp_files_sorted(
+            PathBuf::from(&self.setting.base_temp_dir).join(&self.download_item.uid),
+        )?;
+        let mut file_to_write =
+            PathBuf::from(&self.setting.base_save_dir).join(&self.download_item.file_name);
+        if file_to_write.exists() {
+            file_to_write = resolve_versioned_file_path(
+                self.download_item.file_name.clone(),
+                &self.setting.base_save_dir,
+            )?;
+        }
+        if File::create(&file_to_write).is_err() {
+            file_to_write = resolve_versioned_file_path(
+                self.download_item.uid.clone(),
+                &self.setting.base_save_dir,
+            )?;
+            File::create(&file_to_write)?;
+        }
+
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(file_to_write)?;
+
+        for temp_file in temp_files {
+            let data = fs::read(&temp_file.path)?;
+            output.write_all(&data)?;
+        }
+
+        let success = output.metadata()?.len() == self.download_item.file_size;
+        if success {
+            // TODO kill workers
+        } else {
+            println!("Assemble failed");
+        }
+        // TODO: notify progress
+
+        Ok(success)
     }
 }

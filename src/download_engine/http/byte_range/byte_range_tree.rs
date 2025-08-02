@@ -2,7 +2,6 @@ use crate::download_engine::http::byte_range::ByteRange;
 use std::cell::RefCell;
 use std::cmp::PartialEq;
 use std::fmt::{Display, Formatter};
-use std::ops::Deref;
 use std::rc::{Rc, Weak};
 use strum_macros::{Display, EnumString};
 

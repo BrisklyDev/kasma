@@ -15,6 +15,7 @@ pub mod byte_range;
 pub mod http_download_engine;
 pub mod http_download_worker;
 pub mod message;
+pub mod progress;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -141,13 +142,12 @@ impl HttpClient {
 
 pub struct FileInfo {
     pub url: String,
-    pub headers: HashMap<String, String>,
     pub file_size: u64,
     pub file_name: String,
     pub supports_range: bool,
 }
 
-pub async fn fetch_file_info(url: &str) -> Result<FileInfo, Box<dyn std::error::Error>> {
+pub async fn fetch_file_info(url: String) -> anyhow::Result<FileInfo> {
     let uri: Uri = url.parse()?;
     let client = HttpClient::new();
     let make_req = |method: &str| {
@@ -157,7 +157,6 @@ pub async fn fetch_file_info(url: &str) -> Result<FileInfo, Box<dyn std::error::
             .header("User-Agent", "rust-hyper/1.0") // TODO fix
             .body(Empty::new())
     };
-    // Send HEAD request first
     let mut resp = client.send(make_req("HEAD")?).await?;
     let mut file_size = extract_content_length(&resp);
     let mut file_name = extract_file_name(&resp);
@@ -173,16 +172,15 @@ pub async fn fetch_file_info(url: &str) -> Result<FileInfo, Box<dyn std::error::
     }
     Ok(FileInfo {
         url: url.to_string(),
-        headers: HashMap::new(),
         file_name: file_name
-            .or_else(|| extract_file_name_from_url(url))
+            .or_else(|| extract_file_name_from_url(url.clone()))
             .unwrap(), // TODO: fix
         file_size: file_size.expect("REASON"),
         supports_range,
     })
 }
 
-fn extract_file_name_from_url(url: &str) -> Option<String> {
+fn extract_file_name_from_url(url: String) -> Option<String> {
     url.split('/')
         .last()
         .map(|s| s.split('?').next().unwrap_or("").to_string())
@@ -202,12 +200,10 @@ pub fn extract_filename(resp: &Response<Incoming>) -> Option<String> {
         let token = token.trim();
         if token.to_lowercase().starts_with("filename") {
             let filename = token.splitn(2, '=').nth(1)?.trim();
-            // Remove surrounding quotes if any
             let filename = filename
                 .strip_prefix('"')
                 .and_then(|f| f.strip_suffix('"'))
                 .unwrap_or(filename);
-            // Remove UTF-8 prefix if present
             return Some(
                 filename
                     .strip_prefix("UTF-8''")

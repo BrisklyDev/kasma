@@ -1,23 +1,35 @@
 use crate::download_engine::http::FileInfo;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod http;
 pub mod utils;
 
-pub struct Setting {
-    proxy: Option<NetworkProxy>,
-    total_connections: u8,
+pub struct DownloadSetting {
+    pub proxy: Option<NetworkProxy>,
+    pub total_connections: u8,
+    pub base_save_dir: PathBuf,
+    pub base_temp_dir: PathBuf,
 }
 
 #[derive(Clone)]
 pub struct DownloadItem {
     uid: String,
     url: String,
+    prefetched_info: bool,
     headers: HashMap<String, String>,
     supports_range: bool,
     file_size: u64,
     file_name: String,
+}
+
+pub struct DownloadInfo {
+    pub url: String,
+    pub uid: Option<String>,
+    pub supports_range: Option<bool>,
+    pub file_size: Option<u64>,
+    pub filename: Option<String>,
 }
 
 impl DownloadItem {
@@ -25,7 +37,8 @@ impl DownloadItem {
         Self {
             uid: Uuid::new_v4().to_string(),
             url: file_info.url.clone(),
-            headers: file_info.headers.clone(),
+            prefetched_info: false,
+            headers: HashMap::new(),
             supports_range: file_info.supports_range,
             file_size: file_info.file_size,
             file_name: file_info.file_name.clone(),

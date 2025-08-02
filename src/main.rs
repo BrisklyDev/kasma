@@ -1,19 +1,39 @@
 use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg};
-use crate::download_engine::{RunnableTask, http::http_download_engine::HttpDownloadEngine};
+use crate::download_engine::{
+    DownloadInfo, DownloadSetting, RunnableTask, http::http_download_engine::HttpDownloadEngine,
+};
+use std::path::PathBuf;
 use std::thread;
 use tokio::runtime::Runtime;
+use crate::download_engine::utils::file::resolve_versioned_file_path;
 
 pub mod download_engine;
 
-// #[tokio::main]
 fn main() {
-    // Example: spawn thread per download
-    let (engine_to_main_tx, engine_to_main_rx) = tokio::sync::mpsc::channel::<EngineToMainMsg>(100);
-    let (main_to_engine_tx, main_to_engine_rx) = tokio::sync::mpsc::channel::<DownloadCommand>(100);
-    let handle = thread::spawn(move || {
-        HttpDownloadEngine::new(main_to_engine_rx, engine_to_main_tx).run();
-    });
-    handle.join().unwrap();
+    // let (engine_to_main_tx, engine_to_main_rx) = tokio::sync::mpsc::channel::<EngineToMainMsg>(100);
+    // let (main_to_engine_tx, main_to_engine_rx) = tokio::sync::mpsc::channel::<DownloadCommand>(100);
+    // let info = DownloadInfo {
+    //     url: "https://github.com/BrisklyDev/brisk/releases/download/v2.3.2/Brisk-v2.3.2-macos.dmg"
+    //         .to_string(),
+    //     uid: None,
+    //     supports_range: None,
+    //     file_size: None,
+    //     filename: None,
+    // };
+    // let setting = DownloadSetting {
+    //     proxy: None,
+    //     total_connections: 8,
+    //     base_save_dir: PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out"),
+    //     base_temp_dir: PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out\\temp"),
+    // };
+    // let handle = thread::spawn(move || {
+    //     HttpDownloadEngine::new(main_to_engine_rx, engine_to_main_tx, info, setting, None)
+    //         .0
+    //         .run();
+    // });
+    // handle.join().unwrap();
+    let aaa = resolve_versioned_file_path("ttt.tar.gz", PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out"));
+    println!("{}", aaa.unwrap().to_str().unwrap());
 }
 
 // fn main() {

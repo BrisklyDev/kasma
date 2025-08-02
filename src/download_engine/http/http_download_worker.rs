@@ -6,19 +6,22 @@ use crate::download_engine::http::http_download_engine::{
 use crate::download_engine::http::http_download_worker::Status::RangeComplete;
 use crate::download_engine::http::message::{ToEngineMessage, WorkerToEngineMsg};
 use crate::download_engine::http::{ClientError, HttpClient};
-use crate::download_engine::utils::{TempFileMetadata, list_files_in_dir, now_millis};
+use crate::download_engine::utils::file::{TempFileMetadata, list_files_in_dir};
+use crate::download_engine::utils::now_millis;
 use crate::download_engine::{DownloadItem, RunnableTask};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
+use std::fs::{File, create_dir_all, remove_file};
+use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::vec;
-use tokio::fs::{File, create_dir_all, remove_file};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{Receiver, Sender};
+use crate::download_engine::http::progress::WorkerProgress;
 
 const SPEED_CHECK_WINDOW_MILLIS: u32 = 1100;
 const MIN_FLUSH: u64 = 64 * 1024; // 64 KB
@@ -236,7 +239,7 @@ impl HttpDownloadWorker {
         }
         self.terminated_on_completion = false;
         self.total_request_bytes_received = 0;
-        create_dir_all(self.temp_directory()).await?;
+        create_dir_all(self.temp_directory())?;
         self.init_temp_files_cache();
         Ok(())
     }
@@ -362,16 +365,16 @@ impl HttpDownloadWorker {
                 new_buf_start_byte = Some(file_meta.start_byte);
                 let cut_len = self.byte_range.end - file_meta.start_byte + 1;
                 println!("Cut len: {}", cut_len);
-                let mut file = File::open(&file_meta.path).await?;
+                let mut file = File::open(&file_meta.path)?;
                 new_buf_to_write = Some(vec![0u8; cut_len as usize]);
-                file.read_exact(new_buf_to_write.as_mut().unwrap()).await?;
+                file.read_exact(new_buf_to_write.as_mut().unwrap())?;
                 to_delete.push(file_meta);
             }
         }
 
         for to_delete_meta in &to_delete {
             self.total_bytes_received -= to_delete_meta.size;
-            remove_file(&to_delete_meta.path).await?;
+            remove_file(&to_delete_meta.path)?;
             let pos = self
                 .cached_temp_files
                 .iter()
@@ -386,8 +389,8 @@ impl HttpDownloadWorker {
             let new_end_byte = new_start_byte as usize + buf_to_write.len() - 1;
             let filename = format!("{}#{}-{}", self.worker_number, new_start_byte, new_end_byte);
             let file_path = self.temp_directory().join(&filename);
-            let mut file = File::create(&file_path).await?;
-            file.write_all(&buf_to_write).await?;
+            let mut file = File::create(&file_path)?;
+            file.write_all(&buf_to_write)?;
             let file_meta = TempFileMetadata {
                 name: filename.clone(),
                 start_byte: new_start_byte,
@@ -477,10 +480,10 @@ impl HttpDownloadWorker {
             self.temp_file_end_byte(),
         );
         let file_path = self.temp_directory().join(&temp_file_name);
-        let mut file = File::create(&file_path).await?;
+        let mut file = File::create(&file_path)?;
         let mut temp_file_len: u64 = 0;
         for chunk in &self.data_buffer {
-            file.write_all(chunk).await?;
+            file.write_all(chunk)?;
             temp_file_len += chunk.len() as u64;
         }
         // if tempFileStartByte > downloadItem.fileSize {
@@ -672,21 +675,5 @@ impl From<ClientError> for DownloadError {
 impl From<hyper::http::Error> for DownloadError {
     fn from(err: hyper::http::Error) -> Self {
         DownloadError::Other(err.to_string())
-    }
-}
-
-pub struct WorkerProgress {
-    pub speed_bytes_per_sec: u64,
-    pub worker_download_progress: f64,
-    pub total_download_progress: f64,
-}
-
-impl WorkerProgress {
-    pub(crate) fn new() -> Self {
-        WorkerProgress {
-            speed_bytes_per_sec: 0,
-            worker_download_progress: 0.0,
-            total_download_progress: 0.0,
-        }
     }
 }
