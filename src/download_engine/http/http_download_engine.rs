@@ -229,7 +229,8 @@ impl HttpDownloadEngine {
             }
             self.byte_range_tree = Some(tree);
             let node_ref = &self.byte_range_tree.as_ref().unwrap().root;
-            self.spawn_worker(0, self.byte_range_tree.as_ref().unwrap().root.clone());
+            self.spawn_worker(0, self.byte_range_tree.as_ref().unwrap().root.clone())
+                .await;
         } else {
             // TODO: handle resume not initial
         }
