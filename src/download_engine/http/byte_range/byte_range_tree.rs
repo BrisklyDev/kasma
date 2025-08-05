@@ -5,7 +5,7 @@ use std::fmt::{Display, Formatter};
 use std::rc::{Rc, Weak};
 use strum_macros::{Display, EnumString};
 
-type NodeRef = Rc<RefCell<ByteRangeNode>>;
+pub type NodeRef = Rc<RefCell<ByteRangeNode>>;
 type WeakNodeRef = Weak<RefCell<ByteRangeNode>>;
 
 /// A tree implementation of byte ranges. Used for dynamic segmentation
@@ -26,7 +26,7 @@ type WeakNodeRef = Weak<RefCell<ByteRangeNode>>;
 ///     └── [751–1000]
 pub struct ByteRangeTree {
     pub root: NodeRef,
-    pub max_worker_num: u8,
+    pub max_worker_count: u8,
     pub lowest_level_nodes: Vec<NodeRef>,
 }
 
@@ -35,7 +35,7 @@ impl ByteRangeTree {
         ByteRangeTree {
             lowest_level_nodes: vec![root.clone()],
             root,
-            max_worker_num,
+            max_worker_count: max_worker_num,
         }
     }
 
@@ -52,12 +52,12 @@ impl ByteRangeTree {
     ///                 └── [601-600000] (status: Complete, worker: 0)
     pub fn new_from_missing_bytes(
         total_size: u64,
-        max_worker_num: u8,
+        max_worker_count: u8,
         missing_ranges: Vec<ByteRange>,
     ) -> Self {
         let full_range = ByteRange::new(0, total_size);
         let root = ByteRangeNode::new(full_range, ByteRangeStatus::ToDownload, 0);
-        let mut tree = Self::new(root, max_worker_num);
+        let mut tree = Self::new(root, max_worker_count);
         let first_range = missing_ranges[0].clone();
         if missing_ranges.len() == 1 && first_range.start == 0 && first_range.end == total_size - 1
         {
@@ -93,7 +93,7 @@ impl ByteRangeTree {
         if let Some(left_child) = root_ref.left_child.as_ref() {
             left_child.borrow_mut().right_neighbor = root_ref.right_child.as_ref().map(Rc::clone);
         }
-        tree.max_worker_num = 1;
+        tree.max_worker_count = 1;
         tree.lowest_level_nodes.remove(0);
         tree.lowest_level_nodes
             .push(root_ref.left_child.as_ref().unwrap().clone());
@@ -118,7 +118,7 @@ impl ByteRangeTree {
             let mut exceeded_max_worker_num = false;
             let mut iteration_root_ref = iteration_root.borrow_mut();
             if iteration_root_ref.range.start == current_missing.start {
-                if current_max_worker_num + 1 > (max_worker_num - 1) as i8 {
+                if current_max_worker_num + 1 > (max_worker_count - 1) as i8 {
                     exceeded_max_worker_num = true;
                 } else {
                     current_max_worker_num += 1;
@@ -242,7 +242,7 @@ impl ByteRangeTree {
             .cloned()
             .collect();
 
-        if initial_nodes.len() == max_worker_num as usize {
+        if initial_nodes.len() == max_worker_count as usize {
             return tree;
         }
         let mut worker_num = initial_nodes
@@ -251,7 +251,7 @@ impl ByteRangeTree {
             .map(|node| node.borrow().worker_number)
             .unwrap();
 
-        'outer: while worker_num <= max_worker_num {
+        'outer: while worker_num <= max_worker_count {
             initial_nodes = tree
                 .lowest_level_nodes
                 .iter()
@@ -259,7 +259,7 @@ impl ByteRangeTree {
                 .cloned()
                 .collect();
             for node in initial_nodes {
-                if worker_num + 1 >= max_worker_num {
+                if worker_num + 1 >= max_worker_count {
                     break 'outer;
                 }
                 let result = tree.split_byte_range_node(&node, false);
@@ -329,8 +329,8 @@ impl ByteRangeTree {
             right_child_ref.left_neighbor = node_ref.left_child.clone();
             left_child_ref.worker_number = node_ref.worker_number;
             if set_worker_num {
-                self.max_worker_num += 1;
-                right_child_ref.worker_number = self.max_worker_num;
+                self.max_worker_count += 1;
+                right_child_ref.worker_number = self.max_worker_count;
             }
         }
 

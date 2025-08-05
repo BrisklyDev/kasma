@@ -1,5 +1,5 @@
 use crate::download_engine::http::byte_range::ByteRange;
-use crate::download_engine::http::byte_range::byte_range_tree::ByteRangeTree;
+use crate::download_engine::http::byte_range::byte_range_tree::{ByteRangeTree, NodeRef};
 use crate::download_engine::http::fetch_file_info;
 use crate::download_engine::http::http_download_worker::Status;
 use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg, WorkerToEngineMsg};
@@ -16,8 +16,11 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::{fs, thread};
+use std::time::Duration;
+use std::{fs, slice, thread};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task;
+use tokio::time::interval;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -38,6 +41,9 @@ pub struct HttpDownloadEngine {
     byte_range_tree: Option<ByteRangeTree>,
     workers: HashMap<u8, DownloadWorkerHandle>,
     progress: DownloadProgress,
+    from_worker_tx: Sender<WorkerToEngineMsg>,
+    from_worker_rx: Receiver<WorkerToEngineMsg>,
+    spawned_workers: u8,
 }
 
 pub struct DownloadWorkerHandle {
@@ -95,6 +101,8 @@ impl HttpDownloadEngine {
                 "".to_string()
             },
         };
+        let (worker_to_engine_tx, worker_to_engine_rx) =
+            tokio::sync::mpsc::channel::<WorkerToEngineMsg>(100);
         (
             HttpDownloadEngine {
                 setting,
@@ -104,6 +112,9 @@ impl HttpDownloadEngine {
                 byte_range_tree: None,
                 workers: HashMap::new(),
                 progress: DownloadProgress::new(),
+                spawned_workers: 0,
+                from_worker_rx: worker_to_engine_rx,
+                from_worker_tx: worker_to_engine_tx,
             },
             uid,
         )
@@ -121,51 +132,81 @@ impl HttpDownloadEngine {
                 self.download_item.file_name = info.file_name;
             }
         }
-        let range = ByteRange::new(0, self.download_item.file_size);
-        let (worker_to_engine_tx, worker_to_engine_rx) =
-            tokio::sync::mpsc::channel::<WorkerToEngineMsg>(100);
-        let (engine_to_worker_tx, engine_to_worker_rx) =
-            tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
         println!("Total file size: {}", self.download_item.file_size);
-        match self.from_main_rx.recv().await.unwrap() {
-            DownloadCommand::Start => self.handle_start().await.unwrap(), // TODO: handle error
-            DownloadCommand::Pause => {}
-        }
 
-        let status_arc = Arc::new(Mutex::new(Status::Initial));
-        let progress_arc = Arc::new(Mutex::new(WorkerProgress::new()));
-        let worker_handle = DownloadWorkerHandle {
-            range: range.clone(),
-            to_worker_tx: engine_to_worker_tx.clone(),
-            status_arc: status_arc.clone(),
-            progress_arc: progress_arc.clone(),
-        };
-        self.workers.insert(0, worker_handle);
-        let handle = {
-            let mut worker = HttpDownloadWorker::new(
-                0,
-                self.download_item.clone(),
-                range,
-                worker_to_engine_tx,
-                engine_to_worker_rx,
-                status_arc.clone(),
-                progress_arc.clone(),
-            );
-            thread::spawn(move || worker.run())
-        };
-        handle.join().unwrap();
+        task::spawn(async {
+            let mut ticker = interval(Duration::from_secs(2));
+
+            loop {
+                ticker.tick().await;
+                println!("Tick in background: {:?}", std::time::SystemTime::now());
+            }
+        });
+
+        loop {
+            tokio::select! {
+                    Some(cmd) = self.from_main_rx.recv() => {
+                        match cmd {
+                            DownloadCommand::Start => self.handle_start().await.unwrap(), // TODO: proper error handling
+                            DownloadCommand::Pause => {}
+                    }
+                },
+                Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg)
+            }
+        }
     }
 
+    fn handle_worker_msg(&self, msg: WorkerToEngineMsg) {}
+
     async fn handle_start(&mut self) -> anyhow::Result<()> {
-        if self.workers.is_empty() {
+        if self.workers.is_empty() && self.byte_range_tree.is_none() {
             self.validate_temp_files_integrity(true, true, false)?;
             let missing_ranges = self.find_missing_byte_ranges()?;
             if missing_ranges.is_empty() && self.is_assemble_eligible() {
                 self.assemble_file()?;
                 return Ok(());
             }
+            let tree = ByteRangeTree::new_from_missing_bytes(
+                self.download_item.file_size,
+                self.setting.total_connections - 1,
+                missing_ranges,
+            );
+            println!("Tree result: {}", tree);
+            if tree.lowest_level_nodes.len() != 1 {
+                self.spawned_workers = self.setting.total_connections;
+            }
+            self.byte_range_tree = Some(tree);
+            let node_ref = &self.byte_range_tree.as_ref().unwrap().root;
+            self.spawn_worker(0, self.byte_range_tree.as_ref().unwrap().root.clone());
+        } else {
+            // TODO: handle resume not initial
         }
         Ok(())
+    }
+
+    async fn spawn_worker(&mut self, worker_num: u8, tree_node: NodeRef) {
+        let (engine_to_worker_tx, engine_to_worker_rx) =
+            tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
+        let status = Arc::new(Mutex::new(Status::Initial));
+        let progress = Arc::new(Mutex::new(WorkerProgress::new()));
+        let node = tree_node.borrow_mut();
+        let worker_handle = DownloadWorkerHandle {
+            range: node.range.clone(),
+            to_worker_tx: engine_to_worker_tx.clone(),
+            status_arc: status.clone(),
+            progress_arc: progress.clone(),
+        };
+        self.workers.insert(worker_num, worker_handle);
+        let mut worker = HttpDownloadWorker::new(
+            worker_num,
+            self.download_item.clone(),
+            node.range.clone(),
+            self.from_worker_tx.clone(),
+            engine_to_worker_rx,
+            status.clone(),
+            progress,
+        );
+        thread::spawn(move || worker.run());
     }
 
     /// Checks the temp files' integrity and optionally deletes corrupted files by checking for missing
