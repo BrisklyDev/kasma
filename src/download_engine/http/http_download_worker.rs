@@ -5,6 +5,7 @@ use crate::download_engine::http::http_download_engine::{
 };
 use crate::download_engine::http::http_download_worker::Status::RangeComplete;
 use crate::download_engine::http::message::{ToEngineMessage, WorkerToEngineMsg};
+use crate::download_engine::http::progress::WorkerProgress;
 use crate::download_engine::http::{ClientError, HttpClient};
 use crate::download_engine::utils::file::{TempFileMetadata, list_files_in_dir};
 use crate::download_engine::utils::now_millis;
@@ -21,7 +22,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::vec;
 use tokio::sync::mpsc::{Receiver, Sender};
-use crate::download_engine::http::progress::WorkerProgress;
 
 const SPEED_CHECK_WINDOW_MILLIS: u32 = 1100;
 const MIN_FLUSH: u64 = 64 * 1024; // 64 KB
@@ -86,33 +86,38 @@ impl HttpDownloadWorker {
 impl RunnableTask for HttpDownloadWorker {
     fn run(&mut self) {
         println!("Spawned download thread");
-        let rt = tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .unwrap();
-
-        rt.block_on(async move {
-            self.try_download(false).await;
-            loop {
-                match self.from_engine_rx.recv().await {
-                    Some(EngineToWorkerMsg::Start) => {
-                        self.try_download(false).await;
-                    }
-                    Some(EngineToWorkerMsg::Stop) => {
-                        println!("Cancel received");
-                        *self.status.lock().unwrap() = Status::Stopped;
-                    }
-                    None => {
-                        // happens when the sender is dropped. Can be used to break and cleanup
-                    }
-                    _ => {}
-                }
-            }
-        });
+            .unwrap()
+            .block_on(self.run_async());
     }
 }
 
 impl HttpDownloadWorker {
+    async fn run_async(&mut self) {
+        self.try_download(false).await;
+        self.run_event_loop().await;
+    }
+
+    async fn run_event_loop(&mut self) {
+        loop {
+            match self.from_engine_rx.recv().await {
+                Some(EngineToWorkerMsg::Start) => {
+                    self.try_download(false).await;
+                }
+                Some(EngineToWorkerMsg::Stop) => {
+                    println!("Cancel received");
+                    *self.status.lock().unwrap() = Status::Stopped;
+                }
+                None => {
+                    // happens when the sender is dropped. Can be used to break and cleanup
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub async fn try_download(&mut self, reuse: bool) {
         self.try_download_inner(reuse).await;
     }
@@ -677,3 +682,4 @@ impl From<hyper::http::Error> for DownloadError {
         DownloadError::Other(err.to_string())
     }
 }
+

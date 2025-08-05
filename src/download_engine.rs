@@ -6,6 +6,12 @@ use uuid::Uuid;
 pub mod http;
 pub mod utils;
 
+pub enum EngineState {
+    Complete,
+    Initial,
+    Running,
+}
+
 pub struct DownloadSetting {
     pub proxy: Option<NetworkProxy>,
     pub total_connections: u8,

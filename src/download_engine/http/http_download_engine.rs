@@ -1,8 +1,11 @@
+use crate::download_engine::EngineState;
 use crate::download_engine::http::byte_range::ByteRange;
 use crate::download_engine::http::byte_range::byte_range_tree::{ByteRangeTree, NodeRef};
 use crate::download_engine::http::fetch_file_info;
 use crate::download_engine::http::http_download_worker::Status;
-use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg, WorkerToEngineMsg};
+use crate::download_engine::http::message::{
+    DownloadCommand, EngineToMainMsg, ToEngineMessage, WorkerToEngineMsg,
+};
 use crate::download_engine::http::progress::{DownloadProgress, WorkerProgress};
 use crate::download_engine::utils::file::{
     TempFileMetadata, list_temp_files_sorted, resolve_versioned_file_path,
@@ -11,13 +14,14 @@ use crate::download_engine::{
     DownloadInfo, DownloadItem, DownloadSetting, RunnableTask,
     http::http_download_worker::HttpDownloadWorker,
 };
+use anyhow::Ok;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{fs, slice, thread};
+use std::{fs, result, slice, thread};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task;
 use tokio::time::interval;
@@ -35,6 +39,7 @@ pub const MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN: u64 = 500000;
 
 pub struct HttpDownloadEngine {
     download_item: DownloadItem,
+    state: EngineState,
     setting: DownloadSetting,
     from_main_rx: Receiver<DownloadCommand>,
     to_main_rx: Sender<EngineToMainMsg>,
@@ -106,6 +111,7 @@ impl HttpDownloadEngine {
         (
             HttpDownloadEngine {
                 setting,
+                state: EngineState::Initial,
                 download_item: item,
                 from_main_rx,
                 to_main_rx,
@@ -133,30 +139,75 @@ impl HttpDownloadEngine {
             }
         }
         println!("Total file size: {}", self.download_item.file_size);
-
-        task::spawn(async {
-            let mut ticker = interval(Duration::from_secs(2));
-
-            loop {
-                ticker.tick().await;
-                println!("Tick in background: {:?}", std::time::SystemTime::now());
+        match self.run_event_loop().await {
+            anyhow::Result::Ok(_) => {
+                // TODO: terminate workers
             }
-        });
+            Err(_) => {
+                // TODO: restart engine
+            }
+        };
+    }
+
+    async fn run_event_loop(&mut self) -> anyhow::Result<()> {
+        self.state = EngineState::Running;
+        let mut worker_reuse_ticker = interval(Duration::from_secs(1));
+        let mut worker_spawner_ticker = interval(Duration::from_secs(2));
+        let mut connection_reset_ticker = interval(Duration::from_secs(4));
 
         loop {
+            if let EngineState::Complete = self.state {
+                return Ok(());
+            }
             tokio::select! {
-                    Some(cmd) = self.from_main_rx.recv() => {
-                        match cmd {
-                            DownloadCommand::Start => self.handle_start().await.unwrap(), // TODO: proper error handling
-                            DownloadCommand::Pause => {}
-                    }
+                Some(cmd) = self.from_main_rx.recv() => match cmd {
+                    DownloadCommand::Start => self.handle_start().await?,
+                    DownloadCommand::Pause => self.pause_workers().await?,
                 },
-                Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg)
+                Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg),
+                _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker(),
+                _ = worker_spawner_ticker.tick() => self.run_worker_spawner_ticker(),
+                _ = connection_reset_ticker.tick() => self.run_connection_reset_ticker(),
             }
         }
     }
 
-    fn handle_worker_msg(&self, msg: WorkerToEngineMsg) {}
+    fn run_connection_reset_ticker(&self) {}
+
+    fn run_worker_reuse_ticker(&self) {}
+
+    fn run_worker_spawner_ticker(&self) {}
+
+    async fn pause_workers(&self) -> anyhow::Result<()> {
+        for handle in &self.workers {
+            let sender = &handle.1.to_worker_tx;
+            sender.send(EngineToWorkerMsg::Stop).await?;
+        }
+        Ok(())
+    }
+
+    fn handle_worker_msg(&self, msg: WorkerToEngineMsg) {
+        match msg.message {
+            ToEngineMessage::Completed => todo!(),
+            ToEngineMessage::ByteRangeRefreshSuccess {
+                refreshed_start_byte,
+                refreshed_end_byte,
+                reuse,
+            } => todo!(),
+            ToEngineMessage::ByteRangeRefreshRefused {
+                requested_range,
+                reuse,
+            } => todo!(),
+            ToEngineMessage::ByteRangeRefreshOverlapped {
+                new_valid_start_byte,
+                new_valid_end_byte,
+                refreshed_start_byte,
+                refreshed_end_byte,
+            } => todo!(),
+            ToEngineMessage::Stopped => todo!(),
+            ToEngineMessage::Failed => todo!(),
+        }
+    }
 
     async fn handle_start(&mut self) -> anyhow::Result<()> {
         if self.workers.is_empty() && self.byte_range_tree.is_none() {
