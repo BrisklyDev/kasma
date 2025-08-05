@@ -160,6 +160,7 @@ impl HttpDownloadEngine {
                 return Ok(());
             }
             tokio::select! {
+                biased;
                 Some(cmd) = self.from_main_rx.recv() => match cmd {
                     DownloadCommand::Start => self.handle_start().await?,
                     DownloadCommand::Pause => self.pause_workers().await?,

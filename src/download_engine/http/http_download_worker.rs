@@ -167,6 +167,26 @@ impl HttpDownloadWorker {
                 let mut body = resp.into_body();
                 loop {
                     tokio::select! {
+                        biased;
+                        Some(msg) = self.from_engine_rx.recv() => {
+                            match msg {
+                                Stop => {
+                                    println!("Cancel message received from engine. Exiting download...");
+                                    *self.status.lock().unwrap() = Status::Stopped;
+                                    return Ok(Status::Stopped);
+                                }
+                                RefreshSegment(new_range, reuse) => {
+                                    let result = self.refresh_byte_range(new_range, reuse);
+                                    self.send_to_engine(result).await;
+                                }
+                                Reset => {
+                                    println!("Reset message received from engine. Exiting download...");
+                                    *self.status.lock().unwrap() = Status::Resetting;
+                                    return Ok(Status::Resetting);
+                                }
+                                _ => {}
+                            }
+                        },
                         frame = body.frame() => {
                             match frame {
                                 Some(Ok(chunk)) => {
@@ -189,25 +209,6 @@ impl HttpDownloadWorker {
                                         Err(_) => Err(DownloadError::ProcessChunk),
                                     }
                                 }
-                            }
-                        }
-                        Some(msg) = self.from_engine_rx.recv() => {
-                            match msg {
-                                Stop => {
-                                    println!("Cancel message received from engine. Exiting download...");
-                                    *self.status.lock().unwrap() = Status::Stopped;
-                                    return Ok(Status::Stopped);
-                                }
-                                RefreshSegment(new_range, reuse) => {
-                                    let result = self.refresh_byte_range(new_range, reuse);
-                                    self.send_to_engine(result).await;
-                                }
-                                Reset => {
-                                    println!("Reset message received from engine. Exiting download...");
-                                    *self.status.lock().unwrap() = Status::Resetting;
-                                    return Ok(Status::Resetting);
-                                }
-                                _ => {}
                             }
                         }
                     }
@@ -682,4 +683,3 @@ impl From<hyper::http::Error> for DownloadError {
         DownloadError::Other(err.to_string())
     }
 }
-
