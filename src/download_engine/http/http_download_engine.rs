@@ -18,12 +18,12 @@ use anyhow::Ok;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::linux::raw::stat;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{fs, result, slice, thread};
+use std::{fs, thread};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task;
 use tokio::time::interval;
 use uuid::Uuid;
 
@@ -140,7 +140,7 @@ impl HttpDownloadEngine {
         }
         println!("Total file size: {}", self.download_item.file_size);
         match self.run_event_loop().await {
-            anyhow::Result::Ok(_) => {
+            Result::Ok(_) => {
                 // TODO: terminate workers
             }
             Err(_) => {
@@ -168,12 +168,24 @@ impl HttpDownloadEngine {
                 Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg),
                 _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker(),
                 _ = worker_spawner_ticker.tick() => self.run_worker_spawner_ticker(),
-                _ = connection_reset_ticker.tick() => self.run_connection_reset_ticker(),
+                _ = connection_reset_ticker.tick() => self.run_connection_reset_ticker().await?,
             }
         }
     }
 
-    fn run_connection_reset_ticker(&self) {}
+    async fn run_connection_reset_ticker(&self) -> anyhow::Result<()> {
+        let connections_to_reset = self.workers.iter().filter(|x| {
+            let status = x.1.status_arc.lock().unwrap();
+            !matches!(
+                *status,
+                Status::Stopped | Status::Starting | Status::Complete
+            )
+        });
+        for worker in connections_to_reset {
+            worker.1.to_worker_tx.send(EngineToWorkerMsg::Reset).await?;
+        }
+        Ok(())
+    }
 
     fn run_worker_reuse_ticker(&self) {}
 
