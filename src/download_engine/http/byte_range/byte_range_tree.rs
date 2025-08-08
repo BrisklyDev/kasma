@@ -50,7 +50,7 @@ impl ByteRangeTree {
     ///             └── [300-600000] (status: Outdated, worker: 0)
     ///                 ├── [300-600] (status: ToDownload, worker: 1)
     ///                 └── [601-600000] (status: Complete, worker: 0)
-    pub fn new_from_missing_bytes(
+    pub fn from_missing_bytes(
         total_size: u64,
         max_worker_count: u8,
         missing_ranges: Vec<ByteRange>,

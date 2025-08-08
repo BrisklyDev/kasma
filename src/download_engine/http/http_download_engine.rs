@@ -18,8 +18,10 @@ use anyhow::Ok;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::ops::Deref;
 use std::os::linux::raw::stat;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{fs, thread};
@@ -192,6 +194,7 @@ impl HttpDownloadEngine {
     fn run_worker_spawner_ticker(&self) {}
 
     async fn pause_workers(&self) -> anyhow::Result<()> {
+        // TODO: status validation
         for handle in &self.workers {
             let sender = &handle.1.to_worker_tx;
             sender.send(EngineToWorkerMsg::Stop).await?;
@@ -230,19 +233,21 @@ impl HttpDownloadEngine {
                 self.assemble_file()?;
                 return Ok(());
             }
-            let tree = ByteRangeTree::new_from_missing_bytes(
+            if missing_ranges.len() != 1
+                && *missing_ranges.first().unwrap()
+                    != ByteRange::new(0, self.download_item.file_size)
+            {
+                self.spawned_workers = self.setting.total_connections;
+            }
+            let tree = ByteRangeTree::from_missing_bytes(
                 self.download_item.file_size,
                 self.setting.total_connections - 1,
                 missing_ranges,
             );
             println!("Tree result: {}", tree);
-            if tree.lowest_level_nodes.len() != 1 {
-                self.spawned_workers = self.setting.total_connections;
-            }
             self.byte_range_tree = Some(tree);
-            let node_ref = &self.byte_range_tree.as_ref().unwrap().root;
-            self.spawn_worker(0, self.byte_range_tree.as_ref().unwrap().root.clone())
-                .await;
+            let node_ref = self.byte_range_tree.as_ref().unwrap().root.clone();
+            self.spawn_worker(0, node_ref).await;
         } else {
             // TODO: handle resume not initial
         }
