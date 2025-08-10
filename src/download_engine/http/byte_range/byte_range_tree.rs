@@ -24,6 +24,7 @@ type WeakNodeRef = Weak<RefCell<ByteRangeNode>>;
 /// └── [501–1000]
 ///     ├── [501–750]
 ///     └── [751–1000]
+#[derive(Clone)]
 pub struct ByteRangeTree {
     pub root: NodeRef,
     pub max_worker_count: u8,
@@ -374,7 +375,7 @@ impl ByteRangeTree {
             return Ok(());
         }
 
-        let mut current_neighbor = Rc::clone(&node);
+        let mut current_neighbor = Rc::clone(node.borrow().right_neighbor.as_ref().unwrap());
 
         loop {
             let is_complete;
