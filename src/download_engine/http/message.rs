@@ -1,11 +1,14 @@
-use crate::download_engine::http::byte_range::ByteRange;
+use crate::download_engine::http::{byte_range::ByteRange, progress::DownloadProgress};
 
 pub enum DownloadCommand {
     Pause,
     Start,
 }
 
-pub enum EngineToMainMsg {}
+pub enum EngineToMainMsg {
+    Uid(String),
+    Progress(DownloadProgress),
+}
 
 #[derive(Debug)]
 pub struct WorkerToEngineMsg {

@@ -160,6 +160,7 @@ impl HttpDownloadEngine {
         let mut worker_spawner_ticker = interval(Duration::from_secs(2));
         let mut worker_reset_ticker = interval(Duration::from_secs(4));
         let mut download_progress_ticker = interval(Duration::from_millis(200));
+        self.handle_start().await?;
 
         loop {
             if let EngineState::Complete = self.state {
@@ -183,7 +184,8 @@ impl HttpDownloadEngine {
     fn handle_progress_updates(&mut self) -> anyhow::Result<()> {
         let total_bytes_speed = self.calculate_total_speed()?;
         let is_temp_write_complete = self.check_temp_write_completion()?;
-        let total_progress = self.calculate_total_progress()?;
+        self.progress.total_download_progress = self.calculate_total_progress()?;
+        self.calculate_estimated_remaining(total_bytes_speed)?;
 
         todo!()
     }

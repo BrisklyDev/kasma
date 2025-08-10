@@ -25,8 +25,8 @@ fn main() {
     let setting = DownloadSetting {
         proxy: None,
         total_connections: 8,
-        base_save_dir: PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out"),
-        base_temp_dir: PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out\\temp"),
+        base_save_dir: PathBuf::from("kasma-out"),
+        base_temp_dir: PathBuf::from("kasma-out").join("temp"),
     };
     let handle = thread::spawn(move || {
         HttpDownloadEngine::new(main_to_engine_rx, engine_to_main_tx, info, setting, None)
@@ -34,11 +34,6 @@ fn main() {
             .run();
     });
     handle.join().unwrap();
-    let aaa = resolve_versioned_file_path(
-        "ttt.tar.gz",
-        PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out"),
-    );
-    println!("{}", aaa.unwrap().to_str().unwrap());
 }
 
 // fn main() {
