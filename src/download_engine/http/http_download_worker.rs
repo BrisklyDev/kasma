@@ -9,6 +9,7 @@ use crate::download_engine::http::progress::WorkerProgress;
 use crate::download_engine::http::{ClientError, HttpClient};
 use crate::download_engine::utils::file::{TempFileMetadata, list_files_in_dir};
 use crate::download_engine::utils::now_millis;
+use crate::download_engine::utils::sync_ext::MutexAnyhowExt;
 use crate::download_engine::{DownloadItem, RunnableTask};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
@@ -33,13 +34,13 @@ const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 /// receive messages respectively.
 pub struct HttpDownloadWorker {
     pub worker_number: u8,
+    status_downloading: bool,
     download_info: DownloadItem,
     byte_range: ByteRange,
     data_buffer: Vec<Bytes>,
     speed_check_bytes: u64,
     to_engine_tx: Sender<WorkerToEngineMsg>,
     from_engine_rx: Receiver<EngineToWorkerMsg>,
-    status: Arc<Mutex<Status>>,
     progress: Arc<Mutex<WorkerProgress>>,
     last_speed_check_epoch_millis: u128,
     temp_bytes_received: u64,
@@ -58,18 +59,17 @@ impl HttpDownloadWorker {
         byte_range: ByteRange,
         to_engine_tx: Sender<WorkerToEngineMsg>,
         from_engine_rx: Receiver<EngineToWorkerMsg>,
-        status: Arc<Mutex<Status>>,
         progress: Arc<Mutex<WorkerProgress>>,
     ) -> Self {
         HttpDownloadWorker {
             download_info: info,
+            status_downloading: false,
             worker_number,
             byte_range,
             data_buffer: vec![],
             speed_check_bytes: 0,
             to_engine_tx,
             from_engine_rx,
-            status,
             progress,
             last_speed_check_epoch_millis: now_millis(),
             temp_bytes_received: 0,
@@ -108,7 +108,7 @@ impl HttpDownloadWorker {
                 }
                 Some(EngineToWorkerMsg::Stop) => {
                     println!("Cancel received");
-                    *self.status.lock().unwrap() = Status::Stopped;
+                    self.progress.lock().unwrap().status = Status::Stopped;
                 }
                 None => {
                     // happens when the sender is dropped. Can be used to break and cleanup
@@ -126,7 +126,7 @@ impl HttpDownloadWorker {
     fn try_download_inner<'a>(&'a mut self, reuse: bool) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
         Box::pin(async move {
             match self.start_download(reuse).await {
-                Ok(Status::Complete) => self.send_to_engine(ToEngineMessage::Completed).await,
+                Ok(Status::RangeComplete) => self.send_to_engine(ToEngineMessage::Complete).await,
                 Err(_) => self.send_to_engine(ToEngineMessage::Failed).await,
                 Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
                 Ok(Status::Resetting) => self.try_download_inner(reuse).await,
@@ -145,7 +145,7 @@ impl HttpDownloadWorker {
     /// TODO: Reuse the client
     async fn start_download(&mut self, reuse: bool) -> Result<Status, DownloadError> {
         //TODO: pass reset to method
-        if *self.status.lock().unwrap() == Status::Starting
+        if self.progress.lock().unwrap().status == Status::Starting
             || self.is_start_not_allowed(reuse, false)
         {
             return Err(DownloadError::InvalidCommand);
@@ -154,12 +154,12 @@ impl HttpDownloadWorker {
         let req = self.build_request(reuse)?;
         if let Err(e) = self.init().await {
             println!("Failed to initialize download: {}", e);
-            *self.status.lock().unwrap() = Status::Failed;
+            self.progress.lock().unwrap().status = Status::Failed;
             return Err(DownloadError::Other(e.to_string()));
         }
         if let Ok(EngineToWorkerMsg::Stop) = self.from_engine_rx.try_recv() {
             println!("Download cancelled before start.");
-            *self.status.lock().unwrap() = Status::Stopped;
+            self.progress.lock().unwrap().status = Status::Stopped;
             return Ok(Status::Stopped);
         }
         match client.send(req).await {
@@ -172,7 +172,7 @@ impl HttpDownloadWorker {
                             match msg {
                                 Stop => {
                                     println!("Cancel message received from engine. Exiting download...");
-                                    *self.status.lock().unwrap() = Status::Stopped;
+                                    self.progress.lock().unwrap().status = Status::Stopped;
                                     return Ok(Status::Stopped);
                                 }
                                 RefreshSegment(new_range, reuse) => {
@@ -181,7 +181,7 @@ impl HttpDownloadWorker {
                                 }
                                 Reset => {
                                     println!("Reset message received from engine. Exiting download...");
-                                    *self.status.lock().unwrap() = Status::Resetting;
+                                    self.progress.lock().unwrap().status = Status::Resetting;
                                     return Ok(Status::Resetting);
                                 }
                                 _ => {}
@@ -191,7 +191,7 @@ impl HttpDownloadWorker {
                             match frame {
                                 Some(Ok(chunk)) => {
                                     match self.process_chunk(chunk).await {
-                                        Ok(stop) if stop => return Ok(Status::Complete),
+                                        Ok(stop) if stop => return Ok(Status::RangeComplete),
                                         Ok(_) => {}
                                         Err(_) => return Err(DownloadError::ProcessChunk),
                                     }
@@ -204,7 +204,7 @@ impl HttpDownloadWorker {
                                     return match self.flush_buffer().await {
                                         Ok(_) => {
                                             self.set_download_complete();
-                                            Ok(Status::Complete)
+                                            Ok(Status::RangeComplete)
                                         }
                                         Err(_) => Err(DownloadError::ProcessChunk),
                                     }
@@ -234,17 +234,18 @@ impl HttpDownloadWorker {
             return false;
         }
         matches!(
-            *self.status.lock().unwrap(),
+            self.progress.lock().unwrap().status,
             Status::Downloading | Status::Connecting | Status::Starting
         ) && !conn_reset
     }
 
     async fn init(&mut self) -> anyhow::Result<()> {
         {
-            *self.status.lock().unwrap() = Status::Connecting;
+            self.progress.lock().unwrap().status = Status::Connecting;
         }
         self.terminated_on_completion = false;
         self.total_request_bytes_received = 0;
+        self.status_downloading = false;
         create_dir_all(self.temp_directory())?;
         self.init_temp_files_cache();
         Ok(())
@@ -266,7 +267,7 @@ impl HttpDownloadWorker {
         reuse_connection: bool,
     ) -> ToEngineMessage {
         let prev_end_byte = self.byte_range.end;
-        if *self.status.lock().unwrap() == RangeComplete {
+        if self.progress.lock().unwrap().status == RangeComplete {
             return ToEngineMessage::ByteRangeRefreshRefused {
                 requested_range: new_range,
                 reuse: reuse_connection,
@@ -317,8 +318,9 @@ impl HttpDownloadWorker {
     /// Returns true if the byte range has been downloaded and should terminate the connection.
     /// TODO: Gracefully handle poisoned locks to send panic to the engine and recover
     async fn process_chunk(&mut self, data: Frame<Bytes>) -> anyhow::Result<bool> {
-        {
-            *self.status.lock().unwrap() = Status::Downloading;
+        if !self.status_downloading {
+            self.progress.lock().unwrap().status = Status::Downloading;
+            self.status_downloading = true;
         }
         let chunk = data.data_ref().unwrap().clone();
         let chunk_size = chunk.len() as u64;
@@ -408,7 +410,7 @@ impl HttpDownloadWorker {
             self.cached_temp_files.push(file_meta);
             self.total_bytes_received += buf_to_write.len() as u64;
         }
-        self.progress.lock().unwrap().total_download_progress =
+        self.progress.lock_anyhow()?.total_download_progress =
             self.total_bytes_received as f64 / self.download_info.file_size as f64;
 
         println!("Temp file fix complete");
@@ -473,6 +475,7 @@ impl HttpDownloadWorker {
                 - excess_bytes as f64)
                 / self.download_info.file_size as f64;
         }
+        progress.total_bytes_received = self.total_bytes_received;
     }
 
     async fn flush_buffer(&mut self) -> anyhow::Result<()> {
@@ -602,13 +605,14 @@ impl HttpDownloadWorker {
     }
 
     fn set_download_complete(&mut self) {
-        let mut status = self.status.lock().unwrap();
-        *status = Status::Complete;
-        drop(status);
+        let mut progress = self.progress.lock().unwrap();
+        progress.status = Status::RangeComplete;
+        drop(progress);
 
         let mut progress = self.progress.lock().unwrap();
         progress.worker_download_progress = 1f64;
         let total_bytes = self.total_written_bytes(false);
+        self.status_downloading = false;
         progress.total_download_progress = total_bytes as f64 / self.download_info.file_size as f64;
     }
 

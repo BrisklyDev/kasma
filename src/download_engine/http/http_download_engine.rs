@@ -10,6 +10,8 @@ use crate::download_engine::http::progress::{DownloadProgress, WorkerProgress};
 use crate::download_engine::utils::file::{
     TempFileMetadata, list_temp_files_sorted, resolve_versioned_file_path,
 };
+use crate::download_engine::utils::now_millis;
+use crate::download_engine::utils::sync_ext::MutexAnyhowExt;
 use crate::download_engine::{
     DownloadInfo, DownloadItem, DownloadSetting, RunnableTask,
     http::http_download_worker::HttpDownloadWorker,
@@ -22,9 +24,9 @@ use std::ops::Deref;
 use std::os::linux::raw::stat;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-use std::{fs, thread};
+use std::{any, fs, thread, u64};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::interval;
 use uuid::Uuid;
@@ -48,6 +50,7 @@ pub struct HttpDownloadEngine {
     byte_range_tree: Option<ByteRangeTree>,
     workers: HashMap<u8, DownloadWorkerHandle>,
     progress: DownloadProgress,
+    last_estimation_calc_time: u128,
     from_worker_tx: Sender<WorkerToEngineMsg>,
     from_worker_rx: Receiver<WorkerToEngineMsg>,
     spawned_workers: u8,
@@ -56,7 +59,6 @@ pub struct HttpDownloadEngine {
 pub struct DownloadWorkerHandle {
     range: ByteRange,
     to_worker_tx: Sender<EngineToWorkerMsg>,
-    status_arc: Arc<Mutex<Status>>,
     progress_arc: Arc<Mutex<WorkerProgress>>,
 }
 
@@ -120,6 +122,7 @@ impl HttpDownloadEngine {
                 byte_range_tree: None,
                 workers: HashMap::new(),
                 progress: DownloadProgress::new(),
+                last_estimation_calc_time: 0,
                 spawned_workers: 0,
                 from_worker_rx: worker_to_engine_rx,
                 from_worker_tx: worker_to_engine_tx,
@@ -155,7 +158,8 @@ impl HttpDownloadEngine {
         self.state = EngineState::Running;
         let mut worker_reuse_ticker = interval(Duration::from_secs(1));
         let mut worker_spawner_ticker = interval(Duration::from_secs(2));
-        let mut connection_reset_ticker = interval(Duration::from_secs(4));
+        let mut worker_reset_ticker = interval(Duration::from_secs(4));
+        let mut download_progress_ticker = interval(Duration::from_millis(200));
 
         loop {
             if let EngineState::Complete = self.state {
@@ -170,16 +174,120 @@ impl HttpDownloadEngine {
                 Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg),
                 _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker(),
                 _ = worker_spawner_ticker.tick() => self.run_worker_spawner_ticker(),
-                _ = connection_reset_ticker.tick() => self.run_connection_reset_ticker().await?,
+                _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
+                _ = download_progress_ticker.tick() => self.handle_progress_updates()?,
             }
         }
     }
 
-    async fn run_connection_reset_ticker(&self) -> anyhow::Result<()> {
+    fn handle_progress_updates(&mut self) -> anyhow::Result<()> {
+        let total_bytes_speed = self.calculate_total_speed()?;
+        let is_temp_write_complete = self.check_temp_write_completion()?;
+        let total_progress = self.calculate_total_progress()?;
+
+        todo!()
+    }
+
+    fn calculate_estimated_remaining(&mut self, bytes_speed: u64) -> anyhow::Result<()> {
+        let progresses = self.worker_progresses()?;
+        if progresses.is_empty()
+            || self.last_estimation_calc_time + 1000 > now_millis()
+            || bytes_speed == 0
+        {
+            return Ok(());
+        }
+
+        let total_bytes: u64 = progresses.iter().map(|x| x.total_bytes_received).sum();
+        let remaining_sec = (self.download_item.file_size - total_bytes) / bytes_speed;
+        let mut estimated_remaining = "".to_string();
+
+        let days = (remaining_sec % 31536000) / 86400;
+        let hours = ((remaining_sec % 31536000) % 86400) / 3600;
+        let minutes = (((remaining_sec % 31536000) % 86400) % 3600) / 60;
+        let seconds = (((remaining_sec % 31536000) % 86400) % 3600) % 60;
+
+        fn format_unit(value: u64, unit: &str) -> String {
+            format!("{} {}{}", value, unit, if value == 1 { "" } else { "s" })
+        }
+
+        if days >= 1 {
+            estimated_remaining = format_unit(hours, "Hour");
+        } else if hours >= 1 {
+            estimated_remaining = format!(
+                "{}, {}",
+                format_unit(hours, "Hour"),
+                format_unit(minutes, "Minute")
+            );
+        } else if minutes >= 1 {
+            let estimated_remaining = format!(
+                "{}, {}",
+                format_unit(minutes, "Minute"),
+                format_unit(seconds, "Second")
+            );
+        } else if remaining_sec == 0 {
+            estimated_remaining = "".to_string();
+        } else {
+            estimated_remaining = format_unit(remaining_sec, "Seconds");
+        }
+
+        drop(progresses);
+
+        self.last_estimation_calc_time = now_millis();
+        self.progress.estimated_remaining = estimated_remaining;
+        self.progress.estimated_remaining_sec = remaining_sec;
+
+        Ok(())
+    }
+
+    fn calculate_total_progress(&self) -> anyhow::Result<f64> {
+        let total = self
+            .worker_progresses()?
+            .iter()
+            .map(|p| p.total_download_progress)
+            .sum();
+        Ok(total)
+    }
+
+    fn worker_progresses(&self) -> anyhow::Result<Vec<MutexGuard<'_, WorkerProgress>>> {
+        let progress_vec = self
+            .workers
+            .iter()
+            .map(|w| w.1.progress_arc.lock_anyhow())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(progress_vec)
+    }
+
+    fn check_temp_write_completion(&self) -> anyhow::Result<bool> {
+        let all_complete = self
+            .worker_progresses()?
+            .iter()
+            .all(|x| x.status == Status::RangeComplete);
+        if !all_complete {
+            return Ok(false);
+        }
+        self.validate_temp_files_integrity(true, true, true)?;
+        let missing_ranges = self.find_missing_byte_ranges()?;
+        for range in &missing_ranges {
+            println!("Missing range:: {}", range);
+        }
+        Ok(missing_ranges.is_empty())
+    }
+
+    fn calculate_total_speed(&self) -> anyhow::Result<u64> {
+        let speed_bytes = self
+            .worker_progresses()?
+            .iter()
+            .map(|x| x.speed_bytes_per_sec)
+            .sum();
+        Ok(speed_bytes)
+    }
+
+    async fn run_worker_reset_ticker(&self) -> anyhow::Result<()> {
         let connections_to_reset = self.workers.iter().filter(|x| {
-            let status = x.1.status_arc.lock().unwrap();
+            let status = &x.1.progress_arc.lock().unwrap().status;
             !matches!(
-                *status,
+                status,
                 Status::Stopped | Status::Starting | Status::Complete
             )
         });
@@ -204,7 +312,7 @@ impl HttpDownloadEngine {
 
     fn handle_worker_msg(&self, msg: WorkerToEngineMsg) {
         match msg.message {
-            ToEngineMessage::Completed => todo!(),
+            ToEngineMessage::Complete => todo!(),
             ToEngineMessage::ByteRangeRefreshSuccess {
                 refreshed_start_byte,
                 refreshed_end_byte,
@@ -257,13 +365,11 @@ impl HttpDownloadEngine {
     async fn spawn_worker(&mut self, worker_num: u8, tree_node: NodeRef) {
         let (engine_to_worker_tx, engine_to_worker_rx) =
             tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
-        let status = Arc::new(Mutex::new(Status::Initial));
         let progress = Arc::new(Mutex::new(WorkerProgress::new()));
         let node = tree_node.borrow_mut();
         let worker_handle = DownloadWorkerHandle {
             range: node.range.clone(),
             to_worker_tx: engine_to_worker_tx.clone(),
-            status_arc: status.clone(),
             progress_arc: progress.clone(),
         };
         self.workers.insert(worker_num, worker_handle);
@@ -273,7 +379,6 @@ impl HttpDownloadEngine {
             node.range.clone(),
             self.from_worker_tx.clone(),
             engine_to_worker_rx,
-            status.clone(),
             progress,
         );
         thread::spawn(move || worker.run());

@@ -15,7 +15,7 @@ pub struct WorkerToEngineMsg {
 
 #[derive(Debug)]
 pub enum ToEngineMessage {
-    Completed,
+    Complete,
     ByteRangeRefreshSuccess {
         refreshed_start_byte: u64,
         refreshed_end_byte: u64,
@@ -34,4 +34,3 @@ pub enum ToEngineMessage {
     Stopped,
     Failed,
 }
-
