@@ -5,6 +5,15 @@ pub enum DownloadCommand {
     Start,
 }
 
+#[derive(Debug)]
+pub enum EngineToWorkerMsg {
+    Start,
+    Stop,
+    Reset,
+    RefreshByteRange(ByteRange, bool),
+    StartReuseConnection(ByteRange),
+}
+
 pub enum EngineToMainMsg {
     Uid(String),
     Progress(DownloadProgress),
@@ -18,10 +27,13 @@ pub struct WorkerToEngineMsg {
 
 #[derive(Debug)]
 pub enum ToEngineMessage {
-    Complete,
+    Complete(ByteRange),
+    HandshakeResponse {
+        reuse: bool,
+    },
     ByteRangeRefreshSuccess {
-        refreshed_start_byte: u64,
-        refreshed_end_byte: u64,
+        requested_range: ByteRange,
+        refreshed_range: ByteRange,
         reuse: bool,
     },
     ByteRangeRefreshRefused {
@@ -29,10 +41,10 @@ pub enum ToEngineMessage {
         reuse: bool,
     },
     ByteRangeRefreshOverlapped {
-        new_valid_start_byte: u64,
-        new_valid_end_byte: u64,
-        refreshed_start_byte: u64,
-        refreshed_end_byte: u64,
+        requested_range: ByteRange,
+        refreshed_range: ByteRange,
+        new_valid_range: ByteRange,
+        reuse: bool,
     },
     Stopped,
     Failed,

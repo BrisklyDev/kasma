@@ -406,6 +406,45 @@ impl ByteRangeTree {
         Ok(())
     }
 
+    pub fn search_node<T: AsRef<ByteRange>>(&self, target: T) -> Option<NodeRef> {
+        let node_in_lowest_vec = self
+            .lowest_level_nodes
+            .iter()
+            .find(|x| x.borrow().range == *target.as_ref());
+
+        if node_in_lowest_vec.is_some() {
+            return node_in_lowest_vec.cloned();
+        }
+
+        self.search_node_recursive(target.as_ref(), Some(self.root.clone()))
+    }
+
+    fn search_node_recursive(
+        &self,
+        target: &ByteRange,
+        current_node: Option<NodeRef>,
+    ) -> Option<NodeRef> {
+        let current_node = current_node?.clone();
+
+        if target == &current_node.borrow().range {
+            return Some(current_node);
+        }
+
+        let node_borrow = current_node.borrow();
+        let r_child = node_borrow.right_child.clone();
+        let l_child = node_borrow.left_child.clone();
+
+        for child_opt in [l_child, r_child] {
+            if let Some(child) = child_opt {
+                if target.is_in_range_of(&child.borrow().range) {
+                    return self.search_node_recursive(target, Some(child));
+                }
+            }
+        }
+
+        None
+    }
+
     fn build_tree_str(&self, node: &NodeRef, prefix: String, is_last: bool, buffer: &mut String) {
         let connector = if is_last { "└──" } else { "├──" };
         let node_ref = node.borrow();

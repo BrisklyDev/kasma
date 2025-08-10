@@ -6,6 +6,7 @@ pub struct WorkerProgress {
     pub worker_download_progress: f64,
     pub total_download_progress: f64,
     pub total_bytes_received: u64,
+    pub last_response_time: u128,
 }
 
 impl WorkerProgress {
@@ -16,6 +17,7 @@ impl WorkerProgress {
             worker_download_progress: 0.0,
             total_download_progress: 0.0,
             total_bytes_received: 0,
+            last_response_time: 0,
         }
     }
 }

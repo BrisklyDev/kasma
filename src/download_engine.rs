@@ -12,11 +12,13 @@ pub enum EngineState {
     Running,
 }
 
+#[derive(Clone)]
 pub struct DownloadSetting {
     pub proxy: Option<NetworkProxy>,
     pub total_connections: u8,
     pub base_save_dir: PathBuf,
     pub base_temp_dir: PathBuf,
+    pub reset_timeout_millis: u64,
 }
 
 #[derive(Clone)]
@@ -52,6 +54,7 @@ impl DownloadItem {
     }
 }
 
+#[derive(Clone)]
 pub struct NetworkProxy {
     address: String,
     username: String,

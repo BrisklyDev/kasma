@@ -1,16 +1,16 @@
 use crate::download_engine::http::byte_range::ByteRange;
-use crate::download_engine::http::http_download_engine::EngineToWorkerMsg::*;
-use crate::download_engine::http::http_download_engine::{
-    EngineToWorkerMsg, MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN,
-};
+use crate::download_engine::http::http_download_engine::MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN;
 use crate::download_engine::http::http_download_worker::Status::RangeComplete;
-use crate::download_engine::http::message::{ToEngineMessage, WorkerToEngineMsg};
+use crate::download_engine::http::message::EngineToWorkerMsg::RefreshByteRange;
+use crate::download_engine::http::message::{
+    EngineToWorkerMsg, ToEngineMessage, WorkerToEngineMsg,
+};
 use crate::download_engine::http::progress::WorkerProgress;
 use crate::download_engine::http::{ClientError, HttpClient};
 use crate::download_engine::utils::file::{TempFileMetadata, list_files_in_dir};
 use crate::download_engine::utils::now_millis;
 use crate::download_engine::utils::sync_ext::MutexAnyhowExt;
-use crate::download_engine::{DownloadItem, RunnableTask};
+use crate::download_engine::{DownloadItem, DownloadSetting, RunnableTask};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
@@ -34,6 +34,7 @@ const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 /// receive messages respectively.
 pub struct HttpDownloadWorker {
     pub worker_number: u8,
+    setting: DownloadSetting,
     status_downloading: bool,
     download_info: DownloadItem,
     byte_range: ByteRange,
@@ -55,6 +56,7 @@ pub struct HttpDownloadWorker {
 impl HttpDownloadWorker {
     pub fn new(
         worker_number: u8,
+        setting: DownloadSetting,
         info: DownloadItem,
         byte_range: ByteRange,
         to_engine_tx: Sender<WorkerToEngineMsg>,
@@ -79,6 +81,7 @@ impl HttpDownloadWorker {
             total_bytes_received: 0,
             cached_temp_files: vec![],
             terminated_on_completion: false,
+            setting,
         }
     }
 }
@@ -96,6 +99,8 @@ impl RunnableTask for HttpDownloadWorker {
 
 impl HttpDownloadWorker {
     async fn run_async(&mut self) {
+        let handshake = ToEngineMessage::HandshakeResponse { reuse: false };
+        self.send_to_engine(handshake).await;
         self.try_download(false).await;
         self.run_event_loop().await;
     }
@@ -126,7 +131,10 @@ impl HttpDownloadWorker {
     fn try_download_inner<'a>(&'a mut self, reuse: bool) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
         Box::pin(async move {
             match self.start_download(reuse).await {
-                Ok(Status::RangeComplete) => self.send_to_engine(ToEngineMessage::Complete).await,
+                Ok(Status::RangeComplete) => {
+                    self.send_to_engine(ToEngineMessage::Complete(self.byte_range.clone()))
+                        .await
+                }
                 Err(_) => self.send_to_engine(ToEngineMessage::Failed).await,
                 Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
                 Ok(Status::Resetting) => self.try_download_inner(reuse).await,
@@ -170,16 +178,16 @@ impl HttpDownloadWorker {
                         biased;
                         Some(msg) = self.from_engine_rx.recv() => {
                             match msg {
-                                Stop => {
+                                EngineToWorkerMsg::Stop => {
                                     println!("Cancel message received from engine. Exiting download...");
                                     self.progress.lock().unwrap().status = Status::Stopped;
                                     return Ok(Status::Stopped);
                                 }
-                                RefreshSegment(new_range, reuse) => {
+                                RefreshByteRange(new_range, reuse) => {
                                     let result = self.refresh_byte_range(new_range, reuse);
                                     self.send_to_engine(result).await;
                                 }
-                                Reset => {
+                                EngineToWorkerMsg::Reset => {
                                     println!("Reset message received from engine. Exiting download...");
                                     self.progress.lock().unwrap().status = Status::Resetting;
                                     return Ok(Status::Resetting);
@@ -281,23 +289,23 @@ impl HttpDownloadWorker {
             let new_valid_end = prev_end_byte;
             let new_valid_start = self.byte_range.start;
 
-            if new_end > 0
+            return if new_end > 0
                 && new_range.start < new_end
                 && new_valid_start + MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN < new_valid_end
             {
                 self.byte_range = ByteRange::new(new_range.start, new_end);
-                return ToEngineMessage::ByteRangeRefreshOverlapped {
-                    new_valid_start_byte: self.byte_range.end + 1,
-                    new_valid_end_byte: prev_end_byte,
-                    refreshed_start_byte: self.byte_range.start,
-                    refreshed_end_byte: self.byte_range.end,
-                };
+                ToEngineMessage::ByteRangeRefreshOverlapped {
+                    requested_range: new_range.clone(),
+                    new_valid_range: ByteRange::new(self.byte_range.end + 1, prev_end_byte),
+                    refreshed_range: self.byte_range.clone(),
+                    reuse: reuse_connection,
+                }
             } else {
-                return ToEngineMessage::ByteRangeRefreshRefused {
+                ToEngineMessage::ByteRangeRefreshRefused {
                     requested_range: new_range,
                     reuse: reuse_connection,
-                };
-            }
+                }
+            };
         }
         if new_range.start >= new_range.end || new_range.start + 1 >= new_range.end {
             return ToEngineMessage::ByteRangeRefreshRefused {
@@ -307,11 +315,11 @@ impl HttpDownloadWorker {
         }
 
         self.byte_range = new_range;
-        return ToEngineMessage::ByteRangeRefreshSuccess {
-            refreshed_start_byte: self.byte_range.start,
-            refreshed_end_byte: self.byte_range.end,
+        ToEngineMessage::ByteRangeRefreshSuccess {
+            requested_range: self.byte_range.clone(),
+            refreshed_range: self.byte_range.clone(),
             reuse: reuse_connection,
-        };
+        }
     }
 
     /// Adds the received bytes to the buffer and flushes to disk periodically.
@@ -476,6 +484,7 @@ impl HttpDownloadWorker {
                 / self.download_info.file_size as f64;
         }
         progress.total_bytes_received = self.total_bytes_received;
+        progress.last_response_time = now_millis();
     }
 
     async fn flush_buffer(&mut self) -> anyhow::Result<()> {
@@ -588,7 +597,7 @@ impl HttpDownloadWorker {
     }
 
     fn temp_directory(&self) -> PathBuf {
-        Path::new("/home/ryewell/Apps/tempkasma").join(self.download_info.uid.clone())
+        Path::new(&self.setting.base_temp_dir).join(self.download_info.uid.clone())
     }
 
     fn temp_file_start_byte(&self) -> u64 {

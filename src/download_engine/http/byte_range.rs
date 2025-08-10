@@ -49,3 +49,9 @@ impl fmt::Display for ByteRange {
         write!(f, "ByteRange::{}-{}", self.start, self.end)
     }
 }
+
+impl AsRef<ByteRange> for ByteRange {
+    fn as_ref(&self) -> &ByteRange {
+        self
+    }
+}

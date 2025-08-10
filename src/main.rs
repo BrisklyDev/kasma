@@ -1,5 +1,5 @@
 use crate::download_engine::http::byte_range::ByteRange;
-use crate::download_engine::http::byte_range::byte_range_tree::ByteRangeTree;
+use crate::download_engine::http::byte_range::byte_range_tree::{ByteRangeNode, ByteRangeStatus, ByteRangeTree};
 use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg};
 use crate::download_engine::utils::file::resolve_versioned_file_path;
 use crate::download_engine::{
@@ -25,8 +25,9 @@ fn main() {
     let setting = DownloadSetting {
         proxy: None,
         total_connections: 8,
-        base_save_dir: PathBuf::from("kasma-out"),
-        base_temp_dir: PathBuf::from("kasma-out").join("temp"),
+        reset_timeout_millis: 6000,
+        base_save_dir: PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out"),
+        base_temp_dir: PathBuf::from("C:\\Users\\RyeWell\\Desktop\\kasma-out\\temp"),
     };
     let handle = thread::spawn(move || {
         HttpDownloadEngine::new(main_to_engine_rx, engine_to_main_tx, info, setting, None)
@@ -35,15 +36,6 @@ fn main() {
     });
     handle.join().unwrap();
 }
-
-// fn main() {
-//     let node = ByteRangeNode::new(ByteRange::new(0, 100000), ByteRangeStatus::ToDownload, 0);
-//
-//     let mut tree = ByteRangeTree::new(node, 8);
-//     tree.split();
-//     tree.split();
-//     println!("{}", tree);
-// }
 
 // fn spawn_engine<T: Engine>(engine: &T) -> thread::JoinHandle<()> {
 //     engine.spawn_engine_thread()
