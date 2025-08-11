@@ -27,16 +27,16 @@ type WeakNodeRef = Weak<RefCell<ByteRangeNode>>;
 #[derive(Clone)]
 pub struct ByteRangeTree {
     pub root: NodeRef,
-    pub max_worker_count: u8,
+    max_worker_number: u8,
     pub lowest_level_nodes: Vec<NodeRef>,
 }
 
 impl ByteRangeTree {
-    pub fn new(root: NodeRef, max_worker_num: u8) -> Self {
+    pub fn new(root: NodeRef) -> Self {
         ByteRangeTree {
             lowest_level_nodes: vec![root.clone()],
             root,
-            max_worker_count: max_worker_num,
+            max_worker_number: 0,
         }
     }
 
@@ -58,9 +58,11 @@ impl ByteRangeTree {
     ) -> Self {
         let full_range = ByteRange::new(0, total_size);
         let root = ByteRangeNode::new(None, full_range, ByteRangeStatus::ToDownload, 0);
-        let mut tree = Self::new(root, max_worker_count);
+        let mut tree = Self::new(root);
         let first_range = missing_ranges[0].clone();
-        if missing_ranges.len() == 1 && first_range.start == 0 && first_range.end == total_size - 1
+        if missing_ranges.len() == 1
+            && first_range.start == 0
+            && (first_range.end == total_size - 1 || first_range.end == total_size)
         {
             return tree;
         }
@@ -94,7 +96,7 @@ impl ByteRangeTree {
         if let Some(left_child) = root_ref.left_child.as_ref() {
             left_child.borrow_mut().right_neighbor = root_ref.right_child.as_ref().map(Rc::clone);
         }
-        tree.max_worker_count = 1;
+        tree.max_worker_number = 1;
         tree.lowest_level_nodes.remove(0);
         tree.lowest_level_nodes
             .push(root_ref.left_child.as_ref().unwrap().clone());
@@ -332,14 +334,21 @@ impl ByteRangeTree {
             right_child_ref.left_neighbor = node_ref.left_child.clone();
             left_child_ref.worker_number = node_ref.worker_number;
             if set_worker_num {
-                self.max_worker_count += 1;
-                right_child_ref.worker_number = self.max_worker_count;
+                self.max_worker_number += 1;
+                right_child_ref.worker_number = self.max_worker_number;
             }
         }
 
         let node_idx = {
             let range = node_ref.range.clone();
             drop(node_ref);
+            println!("Trying to find node");
+            println!("Range: {}", range);
+            println!("Tree L:\n {}", self);
+            println!("Lowest lvl:");
+            for refff in &self.lowest_level_nodes {
+                println!("{}", refff.borrow().range);
+            }
             let idx = self
                 .lowest_level_nodes
                 .iter()
@@ -362,7 +371,7 @@ impl ByteRangeTree {
     }
 
     pub fn split(&mut self) -> Result<(), String> {
-        let node = {
+        let mut node = {
             let mut node = Rc::clone(&self.root);
             loop {
                 let left_opt = node.borrow().left_child.clone();
@@ -372,37 +381,35 @@ impl ByteRangeTree {
                 }
             }
         };
+        println!("Splitting byte range node from  up");
         self.split_byte_range_node(&node, true)?;
         if Rc::ptr_eq(&node, &self.root) {
             return Ok(());
         }
 
-        let mut current_neighbor = Rc::clone(node.borrow().right_neighbor.as_ref().unwrap());
-
-        loop {
-            let is_complete;
-            let next = {
-                let neighbor_ref = current_neighbor.borrow();
-                is_complete = neighbor_ref.status == ByteRangeStatus::Complete;
-                neighbor_ref.right_neighbor.as_ref().cloned()
-            };
-            if is_complete {
-                match next {
-                    Some(next_rc) => {
-                        current_neighbor = next_rc;
-                        continue;
-                    }
-                    None => break,
+        let mut current_neighbor = Some(Rc::clone(node.borrow().right_neighbor.as_ref().unwrap()));
+        while let Some(current_neighbor_ref) = current_neighbor {
+            let left_child;
+            {
+                let neighbor_borrow = current_neighbor_ref.borrow();
+                if neighbor_borrow.status == ByteRangeStatus::Complete {
+                    current_neighbor = neighbor_borrow.right_neighbor.clone();
+                    continue;
                 }
+                left_child = neighbor_borrow.left_child.clone();
             }
 
-            self.split_byte_range_node(&current_neighbor, true)?;
+            self.split_byte_range_node(&current_neighbor_ref, true)?;
+
             node.borrow_mut()
                 .right_child
                 .as_ref()
                 .unwrap()
                 .borrow_mut()
-                .right_neighbor = current_neighbor.borrow().left_child.clone();
+                .right_neighbor = left_child;
+
+            node = current_neighbor_ref.clone();
+            current_neighbor = node.borrow().right_neighbor.clone();
         }
 
         Ok(())
@@ -580,7 +587,7 @@ impl ByteRangeNode {
 pub enum ByteRangeStatus {
     ToDownload,
     RefreshRequested,
-    InUse,
+    Downloading,
     ToDownloadInQueue,
     ReuseRequested,
     Outdated,
