@@ -57,7 +57,7 @@ impl ByteRangeTree {
         missing_ranges: Vec<ByteRange>,
     ) -> Self {
         let full_range = ByteRange::new(0, total_size);
-        let root = ByteRangeNode::new(full_range, ByteRangeStatus::ToDownload, 0);
+        let root = ByteRangeNode::new(None, full_range, ByteRangeStatus::ToDownload, 0);
         let mut tree = Self::new(root, max_worker_count);
         let first_range = missing_ranges[0].clone();
         if missing_ranges.len() == 1 && first_range.start == 0 && first_range.end == total_size - 1
@@ -313,11 +313,13 @@ impl ByteRangeTree {
 
         let mut node_ref = node.borrow_mut();
         node_ref.right_child = Some(ByteRangeNode::new(
+            Some(Rc::downgrade(&node)),
             range_right,
             ByteRangeStatus::ToDownload,
             0,
         ));
         node_ref.left_child = Some(ByteRangeNode::new(
+            Some(Rc::downgrade(&node)),
             range_left,
             ByteRangeStatus::ToDownload,
             0,
@@ -419,6 +421,14 @@ impl ByteRangeTree {
         self.search_node_recursive(target.as_ref(), Some(self.root.clone()))
     }
 
+    pub fn lowest_level_nodes_by_status(&self, status: ByteRangeStatus) -> Vec<NodeRef> {
+        self.lowest_level_nodes
+            .iter()
+            .filter(|n| n.borrow().status == status)
+            .cloned()
+            .collect::<Vec<NodeRef>>()
+    }
+
     fn search_node_recursive(
         &self,
         target: &ByteRange,
@@ -504,8 +514,12 @@ impl ByteRangeNode {
         status: ByteRangeStatus,
         worker_number: u8,
     ) {
-        let child = Self::new(byte_range, status, worker_number);
-        child.borrow_mut().parent = self.self_ref.clone();
+        let child = Self::new(
+            Some(self.self_ref.clone()),
+            byte_range,
+            status,
+            worker_number,
+        );
         self.right_child = Some(child);
     }
 
@@ -515,8 +529,12 @@ impl ByteRangeNode {
         status: ByteRangeStatus,
         worker_number: u8,
     ) {
-        let child = Self::new(byte_range, status, worker_number);
-        child.borrow_mut().parent = self.self_ref.clone();
+        let child = Self::new(
+            Some(self.self_ref.clone()),
+            byte_range,
+            status,
+            worker_number,
+        );
         self.left_child = Some(child);
     }
 
@@ -525,10 +543,19 @@ impl ByteRangeNode {
         self.left_child = None;
     }
 
-    pub fn new(range: ByteRange, status: ByteRangeStatus, worker_number: u8) -> NodeRef {
+    pub fn new(
+        parent: Option<WeakNodeRef>,
+        range: ByteRange,
+        status: ByteRangeStatus,
+        worker_number: u8,
+    ) -> NodeRef {
         let node = Rc::new(RefCell::new(ByteRangeNode {
             self_ref: Weak::new(),
-            parent: Weak::new(),
+            parent: if parent.is_none() {
+                Weak::new()
+            } else {
+                parent.unwrap()
+            },
             range,
             worker_number,
             status,
