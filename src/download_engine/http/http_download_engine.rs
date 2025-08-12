@@ -19,15 +19,14 @@ use crate::download_engine::{
     http::http_download_worker::HttpDownloadWorker,
 };
 use anyhow::Ok;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
-use std::{any, fs, thread, u64};
+use std::time::{Duration, Instant};
+use std::{fs, thread, u64};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::id;
 use tokio::time::interval;
 use uuid::Uuid;
 
@@ -40,7 +39,7 @@ pub struct HttpDownloadEngine {
     from_main_rx: Receiver<DownloadCommand>,
     to_main_rx: Sender<EngineToMainMsg>,
     pending_worker_handshakes: Vec<u8>,
-    reuse_worker_queue: Vec<u8>,
+    reuse_worker_queue: VecDeque<u8>,
     byte_range_tree: Option<ByteRangeTree>,
     workers: HashMap<u8, DownloadWorkerHandle>,
     progress: DownloadProgress,
@@ -54,6 +53,7 @@ pub struct DownloadWorkerHandle {
     range: ByteRange,
     to_worker_tx: Sender<EngineToWorkerMsg>,
     progress_arc: Arc<Mutex<WorkerProgress>>,
+    awaiting_reset_response: bool,
 }
 
 impl RunnableTask for HttpDownloadEngine {
@@ -118,7 +118,7 @@ impl HttpDownloadEngine {
                 from_worker_rx: worker_to_engine_rx,
                 from_worker_tx: worker_to_engine_tx,
                 pending_worker_handshakes: Vec::new(),
-                reuse_worker_queue: Vec::new(),
+                reuse_worker_queue: VecDeque::new(),
             },
             uid,
         )
@@ -167,9 +167,9 @@ impl HttpDownloadEngine {
                     DownloadCommand::Pause => self.pause_workers().await?,
                 },
                 Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg).await?,
-                _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker(),
+                // _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker()?,
                 _ = worker_spawner_ticker.tick() => self.run_worker_spawner_ticker().await?,
-                _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
+                // _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
                 _ = download_progress_ticker.tick() => self.handle_progress_updates()?,
             }
         }
@@ -180,6 +180,11 @@ impl HttpDownloadEngine {
         let is_temp_write_complete = self.check_temp_write_completion()?;
         self.progress.total_download_progress = self.calculate_total_progress()?;
         self.calculate_estimated_remaining(total_bytes_speed)?;
+        println!("Total download speed: {}", total_bytes_speed);
+        println!(
+            "Total download progress: {}",
+            self.progress.total_download_progress
+        );
 
         Ok(())
     }
@@ -194,6 +199,9 @@ impl HttpDownloadEngine {
         }
 
         let total_bytes: u64 = progresses.iter().map(|x| x.total_bytes_received).sum();
+        if total_bytes > self.download_item.file_size {
+            return Ok(());
+        }
         let remaining_sec = (self.download_item.file_size - total_bytes) / bytes_speed;
         let estimated_remaining;
 
@@ -294,16 +302,106 @@ impl HttpDownloadEngine {
         Ok(())
     }
 
-    fn run_worker_reuse_ticker(&self) {}
+    fn run_worker_reuse_ticker(&mut self) -> anyhow::Result<()> {
+        if self.reuse_worker_queue.is_empty()
+            || self.should_spawn_worker()
+            || self.workers.iter().any(|w| w.1.awaiting_reset_response)
+            || self.progress.total_download_progress >= 1f64
+        {
+            return Ok(());
+        }
+
+        let worker_num = self.reuse_worker_queue.pop_front().unwrap();
+        self.request_byte_range_refresh_reuse_worker(worker_num)
+    }
+
+    fn request_byte_range_refresh_reuse_worker(&mut self, worker_num: u8) -> anyhow::Result<()> {
+        let byte_range_tree = self.byte_range_tree.as_mut().unwrap();
+        let worker = self.workers.get(&worker_num);
+        if worker.is_none() {
+            anyhow::bail!(
+                "request_byte_range_refresh_reuse_worker:: Failed to find worker_num {} in list of workers",
+                worker_num
+            )
+        }
+        let worker_handle = worker.unwrap();
+
+        let in_queue_nodes =
+            byte_range_tree.lowest_level_nodes_by_status(ByteRangeStatus::ToDownloadInQueue);
+        let in_use_nodes =
+            byte_range_tree.lowest_level_nodes_by_status(ByteRangeStatus::Downloading);
+
+        let mut nodes = if !in_queue_nodes.is_empty() {
+            in_queue_nodes
+        } else {
+            in_use_nodes
+        };
+
+        if nodes.is_empty() {
+            println!(
+                "request_byte_range_refresh_reuse_worker:: Fatal! Failed to find segment node!"
+            );
+            self.reuse_worker_queue.push_back(worker_num);
+            return Ok(());
+        }
+
+        nodes.sort_by(|a, b| a.borrow().range.cmp(&b.borrow().range));
+        let target_node = nodes
+            .iter()
+            .find(|x| x.borrow().range != worker_handle.range);
+
+        if target_node.is_none() {
+            println!("request_byte_range_refresh_reuse_worker:: Fatal! Target node is none!");
+            self.reuse_worker_queue.push_back(worker_num);
+            return Ok(());
+        }
+        let mut target_node_borrow = target_node.unwrap().borrow_mut();
+
+        println!(
+            "Splitting node worker_num::{} with range {}",
+            worker_num, target_node_borrow.range
+        );
+        println!("Pre-split byte range tree:\n{}", byte_range_tree);
+        println!("Splitting byte range node from engine");
+        let split_result = byte_range_tree.split_byte_range_node(target_node.unwrap(), false);
+        println!("Post-split byte range tree:\n{}", byte_range_tree);
+        if split_result.is_err() {
+            println!(
+                "Failed to split node worker_num::{} with range {}",
+                worker_num, target_node_borrow.range
+            );
+            println!("Tree:\n{}", byte_range_tree);
+            return Ok(());
+        }
+
+        if let Some(right_child) = target_node_borrow.right_child.as_ref() {
+            let mut borrow = right_child.borrow_mut();
+            borrow.worker_number = worker_num;
+            borrow.status = ByteRangeStatus::ToDownload;
+        }
+
+        target_node_borrow.status = ByteRangeStatus::RefreshRequested;
+
+        if let Some(left_child) = target_node_borrow.left_child.as_ref() {
+            left_child.borrow_mut().status = ByteRangeStatus::RefreshRequested;
+        }
+
+        self.workers
+            .iter()
+            .find(|w| w.1.range == target_node_borrow.range && !w.1.awaiting_reset_response);
+
+        Ok(())
+    }
 
     async fn run_worker_spawner_ticker(&mut self) -> anyhow::Result<()> {
         if self.should_spawn_worker() {
-            self.request_byte_range_refresh_new_worker().await?;
+            self.request_byte_range_refresh_new_worker().await?
         }
         Ok(())
     }
 
     /// TODO: doc
+    /// TODO: create custom error wrapper with fatal bool value and return that
     async fn request_byte_range_refresh_new_worker(&mut self) -> anyhow::Result<()> {
         if self.byte_range_tree.is_none() {
             return Ok(());
@@ -311,12 +409,13 @@ impl HttpDownloadEngine {
         let byte_range_tree = self.byte_range_tree.as_mut().unwrap();
         println!("Pre-split byte range tree:\n{}", byte_range_tree);
         if let Err(e) = byte_range_tree.split() {
-            println!("_refreshConnectionSegments:: Fatal! {}", e);
+            println!("request_byte_range_refresh_new_worker:: Fatal! {}", e);
             return Ok(());
         }
         println!("Post-split byte range tree:\n{}", byte_range_tree);
         println!("Refreshing worker ranges...");
         for (worker_number, handle) in &self.workers {
+            println!("processing worker {}", worker_number);
             let related_node = byte_range_tree
                 .lowest_level_nodes
                 .iter()
@@ -327,6 +426,11 @@ impl HttpDownloadEngine {
                 return Ok(());
             }
             let mut node = related_node.unwrap().borrow_mut();
+            println!(
+                "sending refresh segment {} to worker {}",
+                worker_number,
+                node.range.clone()
+            );
             let message = EngineToWorkerMsg::RefreshByteRange(node.range.clone(), false);
             node.status = ByteRangeStatus::RefreshRequested;
             self.spawned_workers += 1;
@@ -339,7 +443,7 @@ impl HttpDownloadEngine {
         if self.byte_range_tree.is_none() {
             return false;
         }
-        let pending_exists = self
+        let pending_range_refresh_exists = self
             .byte_range_tree
             .as_ref()
             .unwrap()
@@ -347,15 +451,21 @@ impl HttpDownloadEngine {
             .iter()
             .any(|n| n.borrow().status == ByteRangeStatus::RefreshRequested);
 
-        todo!();
+        !pending_range_refresh_exists
+            && self.progress.estimated_remaining_sec > 5
+            && self.pending_worker_handshakes.is_empty()
+            && self.progress.workers_progress.len() < (self.setting.total_connections as usize)
+            && self.spawned_workers < self.setting.total_connections
+            && self.progress.status != Status::Stopped
     }
 
-    async fn pause_workers(&self) -> anyhow::Result<()> {
+    async fn pause_workers(&mut self) -> anyhow::Result<()> {
         // TODO: status validation
         for handle in &self.workers {
             let sender = &handle.1.to_worker_tx;
             sender.send(EngineToWorkerMsg::Stop).await?;
         }
+        self.progress.status = Status::Stopped;
         Ok(())
     }
 
@@ -366,17 +476,16 @@ impl HttpDownloadEngine {
             }
             ToEngineMessage::ByteRangeRefreshSuccess {
                 requested_range,
-                refreshed_range,
                 reuse,
             } => {
-                self.handle_refresh_byte_range_success(requested_range, reuse)
+                self.handle_refresh_byte_range_success(msg.worker_number, requested_range, reuse)
                     .await?
             }
             ToEngineMessage::ByteRangeRefreshRefused {
                 requested_range,
                 reuse,
             } => {
-                self.handle_refresh_byte_range_refused(requested_range, reuse, msg.worker_number)
+                self.handle_refresh_byte_range_refused(msg.worker_number, requested_range, reuse)
                     .await?;
             }
             ToEngineMessage::ByteRangeRefreshOverlapped {
@@ -386,6 +495,7 @@ impl HttpDownloadEngine {
                 reuse,
             } => {
                 self.handle_refresh_byte_range_overlap(
+                    msg.worker_number,
                     requested_range,
                     refreshed_range,
                     new_valid_range,
@@ -394,10 +504,30 @@ impl HttpDownloadEngine {
                 .await?;
             }
             ToEngineMessage::Stopped => todo!(),
-            ToEngineMessage::Failed => todo!(),
-            ToEngineMessage::HandshakeResponse { reuse } => {}
+            ToEngineMessage::Failed => {}
+            ToEngineMessage::HandshakeResponse { reuse } => {
+                self.handle_worker_handshake(msg.worker_number, reuse);
+            }
         }
         Ok(())
+    }
+
+    fn handle_worker_handshake(&mut self, worker_num: u8, reuse: bool) {
+        self.pending_worker_handshakes.retain(|x| x != &worker_num);
+        if reuse {
+            let tree_ref = self.byte_range_tree.as_ref().unwrap();
+
+            let reuse_request_nodes =
+                tree_ref.lowest_level_nodes_by_status(ByteRangeStatus::ReuseRequested);
+
+            let related_node = reuse_request_nodes
+                .iter()
+                .find(|x| x.borrow().worker_number == worker_num);
+
+            if let Some(node) = related_node {
+                node.borrow_mut().status = ByteRangeStatus::RefreshRequested;
+            }
+        }
     }
 
     fn handle_range_download_completion(
@@ -405,16 +535,24 @@ impl HttpDownloadEngine {
         worker_num: u8,
         range: ByteRange,
     ) -> anyhow::Result<()> {
+        println!("Handling completion #{} {}", worker_num, range);
         if self.reuse_worker_queue.contains(&worker_num) {
-            self.reuse_worker_queue.push(worker_num);
+            self.reuse_worker_queue.push_back(worker_num);
         }
         let tree_ref = self.byte_range_tree.as_ref().unwrap();
+        println!("Tree\n{}", tree_ref);
         let node = tree_ref.search_node(&range);
         if node.is_none() {
-            return Err(anyhow::anyhow!(format!(
+            println!(
                 "handle_range_download_completion:: Failed to find node {} in tree for worker number {}",
                 range, worker_num
-            )));
+            );
+            let node = tree_ref.search_node(&range);
+            anyhow::bail!(
+                "handle_range_download_completion:: Failed to find node {} in tree for worker number {}",
+                range,
+                worker_num
+            );
         }
         node.unwrap().borrow_mut().status = ByteRangeStatus::Complete;
         Ok(())
@@ -422,55 +560,77 @@ impl HttpDownloadEngine {
 
     async fn handle_refresh_byte_range_overlap(
         &mut self,
+        worker_num: u8,
         requested_range: ByteRange,
         refreshed_range: ByteRange,
         new_valid_range: ByteRange,
         reuse: bool,
     ) -> anyhow::Result<()> {
+        println!(
+            "Handling overlap from worker {} with requested range {}",
+            worker_num, requested_range
+        );
         if self.byte_range_tree.is_none() {
             return Ok(());
         }
+
         let tree_ref = self.byte_range_tree.as_ref().unwrap();
+        print!("{}", tree_ref);
         let node = tree_ref.search_node(&requested_range);
         if node.is_none() {
             println!("Fatal:: _handleRefreshSegmentSuccess:: Failed to find segment node.");
             return Ok(());
         }
-        let parent_weak = node.unwrap().borrow().parent.clone();
-        let parent_rc = parent_weak.upgrade().unwrap();
 
-        let mut parent = parent_rc.borrow_mut();
-        let left_child_rc = parent.left_child.as_ref().unwrap().clone();
-        let right_child_rc = parent.right_child.as_ref().unwrap().clone();
-        let mut left_child = left_child_rc.borrow_mut();
-        let mut right_child = right_child_rc.borrow_mut();
-        left_child.range = requested_range.clone();
-        left_child.status = ByteRangeStatus::InUse;
-        right_child.status = ByteRangeStatus::ReuseRequested;
-        parent_rc.borrow_mut().status = ByteRangeStatus::Outdated;
+        self.update_worker_range(worker_num, refreshed_range.clone())?;
 
-        let mut new_worker_node_ref = right_child;
-        let new_worker_node = right_child_rc.clone();
-        new_worker_node_ref.range = new_valid_range.clone();
-        if reuse {
-            self.send_start_command_reuse_worker(
-                new_worker_node_ref.worker_number,
-                new_worker_node_ref.range.clone(),
-            )
-            .await?;
-        } else {
-            self.spawn_worker(new_worker_node_ref.worker_number, new_worker_node)
-                .await;
+        let parent_rc = node.unwrap().borrow().parent.clone().upgrade().unwrap();
+        let left_child_rc;
+        let right_child_rc;
+        let new_worker_number;
+        let new_worker_node;
+
+        {
+            let mut parent = parent_rc.borrow_mut();
+
+            left_child_rc = parent.left_child.as_ref().unwrap().clone();
+            right_child_rc = parent.right_child.as_ref().unwrap().clone();
+
+            {
+                let mut left_child = left_child_rc.borrow_mut();
+                left_child.range = refreshed_range.clone();
+                left_child.status = ByteRangeStatus::Downloading;
+            }
+
+            {
+                let mut right_child = right_child_rc.borrow_mut();
+                right_child.status = ByteRangeStatus::ReuseRequested;
+                right_child.range = new_valid_range.clone();
+                new_worker_number = right_child.worker_number;
+                new_worker_node = right_child_rc.clone();
+            }
+
+            parent.status = ByteRangeStatus::Outdated;
         }
+
+        if reuse {
+            self.send_start_command_reuse_worker(new_worker_number, new_valid_range.clone())
+                .await?;
+            new_worker_node.borrow_mut().status = ByteRangeStatus::Downloading;
+        } else {
+            self.spawn_worker(new_worker_number, right_child_rc).await;
+        }
+
         Ok(())
     }
 
     async fn handle_refresh_byte_range_refused(
         &mut self,
+        worker_number: u8,
         requested_range: ByteRange,
         reuse: bool,
-        worker_number: u8,
     ) -> anyhow::Result<()> {
+        println!("HandleRefreshByteRangeRefused");
         if self.byte_range_tree.is_none() {
             return Ok(());
         }
@@ -484,7 +644,7 @@ impl HttpDownloadEngine {
         let parent_rc = parent_weak.upgrade().unwrap();
         let mut parent = parent_rc.borrow_mut();
         if reuse {
-            self.reuse_worker_queue.push(worker_number);
+            self.reuse_worker_queue.push_back(worker_number);
             println!("Added connection {} to connection queue", worker_number);
         } else {
             // TODO: can we handle this?
@@ -503,29 +663,32 @@ impl HttpDownloadEngine {
         };
 
         if let Some(idx) = l_idx {
-            let mut tree = self.byte_range_tree.as_mut().unwrap();
+            let tree = self.byte_range_tree.as_mut().unwrap();
             tree.lowest_level_nodes
                 .insert(idx, parent_weak.upgrade().clone().unwrap());
 
             let left_child_range = parent.left_child.as_ref().unwrap().borrow().range.clone();
             let right_child_range = parent.right_child.as_ref().unwrap().borrow().range.clone();
             drop(parent);
-            let r_idx = tree
-                .lowest_level_nodes
-                .iter()
-                .position(|node| node.borrow().range == right_child_range);
+
             let l_idx = tree
                 .lowest_level_nodes
                 .iter()
                 .position(|node| node.borrow().range == left_child_range);
 
-            if let Some(l_idx) = l_idx {
-                tree.lowest_level_nodes.remove(l_idx);
+            if let Some(idx) = l_idx {
+                tree.lowest_level_nodes.remove(idx);
             } else {
                 println!("Fatal:: failed to find left child node in lowest level nodes!");
             }
-            if let Some(r_idx) = r_idx {
-                tree.lowest_level_nodes.remove(r_idx);
+
+            let r_idx = tree
+                .lowest_level_nodes
+                .iter()
+                .position(|node| node.borrow().range == right_child_range);
+
+            if let Some(idx) = r_idx {
+                tree.lowest_level_nodes.remove(idx);
             } else {
                 println!("Fatal:: failed to find right child node in lowest level nodes!");
             }
@@ -540,14 +703,20 @@ impl HttpDownloadEngine {
 
     async fn handle_refresh_byte_range_success(
         &mut self,
+        worker_num: u8,
         requested_range: ByteRange,
         reuse: bool,
     ) -> anyhow::Result<()> {
         if self.byte_range_tree.is_none() {
             return Ok(());
         }
+        println!(
+            "Handling refresh success from worker {} with requested range {}",
+            worker_num, requested_range
+        );
         let tree = self.byte_range_tree.as_ref().unwrap();
-        let node = tree.search_node(requested_range);
+        print!("{}", tree);
+        let node = tree.search_node(&requested_range);
         if node.is_none() {
             println!("Fatal:: _handleRefreshSegmentSuccess:: Failed to find segment node.");
             return Ok(());
@@ -566,14 +735,27 @@ impl HttpDownloadEngine {
             )
             .await?;
         } else {
-            self.spawn_worker(worker_node_ref.worker_number, worker_node)
-                .await;
-            self.pending_worker_handshakes
-                .push(worker_node_ref.worker_number);
+            let node_worker_num = worker_node_ref.worker_number;
+            drop(worker_node_ref);
+            self.spawn_worker(node_worker_num, worker_node).await;
+            self.pending_worker_handshakes.push(node_worker_num);
+            worker_node_ref = parent.right_child.as_ref().unwrap().borrow_mut();
         }
-        parent.left_child.as_ref().unwrap().borrow_mut().status = ByteRangeStatus::InUse;
-        worker_node_ref.status = ByteRangeStatus::InUse;
+        parent.left_child.as_ref().unwrap().borrow_mut().status = ByteRangeStatus::Downloading;
+        worker_node_ref.status = ByteRangeStatus::Downloading;
         Ok(())
+    }
+
+    fn update_worker_range(&mut self, worker_num: u8, new_range: ByteRange) -> anyhow::Result<()> {
+        if let Some(worker) = self.workers.get_mut(&worker_num) {
+            worker.range = new_range;
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Failed to find worker {} updating refreshed range",
+                worker_num
+            )
+        }
     }
 
     async fn send_start_command_reuse_worker(
@@ -589,18 +771,11 @@ impl HttpDownloadEngine {
 
             Ok(())
         } else {
-            Err(anyhow::anyhow!(format!(
+            anyhow::bail!(
                 "Failed to find worker {} when sending start command reuse worker",
                 worker_num
-            )))
+            )
         }
-    }
-
-    fn handle_worker_handshake(&mut self, msg: WorkerToEngineMsg) {
-        self.pending_worker_handshakes
-            .retain(|x| x != &msg.worker_number);
-
-        // TODO: reuse
     }
 
     async fn handle_start(&mut self) -> anyhow::Result<()> {
@@ -642,9 +817,11 @@ impl HttpDownloadEngine {
             range: node.range.clone(),
             to_worker_tx: engine_to_worker_tx.clone(),
             progress_arc: progress.clone(),
+            awaiting_reset_response: false,
         };
         self.workers.insert(worker_num, worker_handle);
-        node.status = ByteRangeStatus::InUse;
+        node.status = ByteRangeStatus::Downloading;
+        println!("Spawned worker #{}", worker_num);
         let mut worker = HttpDownloadWorker::new(
             worker_num,
             self.setting.clone(),
@@ -692,6 +869,18 @@ impl HttpDownloadEngine {
                 continue;
             }
             let next_file = &temp_files[idx + 1];
+            if curr_file.end_byte > next_file.start_byte {
+                println!(
+                    "WTFFF:: {}-{}, {}-{}",
+                    curr_file.start_byte,
+                    curr_file.end_byte,
+                    next_file.start_byte,
+                    next_file.end_byte
+                );
+                for fs in &temp_files {
+                    println!("#{}-{}-{}", fs.worker_number, fs.start_byte, fs.end_byte);
+                }
+            };
             if next_file.start_byte - curr_file.end_byte == 2 {
                 files_to_delete.push(curr_file);
                 if idx == 0 {
@@ -784,7 +973,7 @@ impl HttpDownloadEngine {
         todo!()
     }
 
-    fn assemble_file(&self) -> anyhow::Result<bool> {
+    fn assemble_file(&mut self) -> anyhow::Result<bool> {
         let temp_files = list_temp_files_sorted(
             PathBuf::from(&self.setting.base_temp_dir).join(&self.download_item.uid),
         )?;
@@ -817,6 +1006,7 @@ impl HttpDownloadEngine {
 
         let success = output.metadata()?.len() == self.download_item.file_size;
         if success {
+            self.state = EngineState::Complete;
             // TODO kill workers
         } else {
             println!("Assemble failed");

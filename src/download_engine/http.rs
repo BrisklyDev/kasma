@@ -216,6 +216,7 @@ pub fn extract_filename(resp: &Response<Incoming>) -> Option<String> {
 }
 
 fn extract_file_name(resp: &hyper::Response<hyper::body::Incoming>) -> Option<String> {
+    println!("{:?}", resp.headers());
     resp.headers().get(CONTENT_DISPOSITION).and_then(|val| {
         let val = val.to_str().ok()?;
         val.split(';').find_map(|part| {

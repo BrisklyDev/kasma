@@ -33,7 +33,6 @@ pub enum ToEngineMessage {
     },
     ByteRangeRefreshSuccess {
         requested_range: ByteRange,
-        refreshed_range: ByteRange,
         reuse: bool,
     },
     ByteRangeRefreshRefused {

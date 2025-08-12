@@ -22,6 +22,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::vec;
+use thiserror::Error;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 const SPEED_CHECK_WINDOW_MILLIS: u32 = 1100;
@@ -101,7 +102,7 @@ impl HttpDownloadWorker {
     async fn run_async(&mut self) {
         let handshake = ToEngineMessage::HandshakeResponse { reuse: false };
         self.send_to_engine(handshake).await;
-        self.try_download(false).await;
+        self.try_download(false, false).await;
         self.run_event_loop().await;
     }
 
@@ -109,7 +110,7 @@ impl HttpDownloadWorker {
         loop {
             match self.from_engine_rx.recv().await {
                 Some(EngineToWorkerMsg::Start) => {
-                    self.try_download(false).await;
+                    self.try_download(false, false).await;
                 }
                 Some(EngineToWorkerMsg::Stop) => {
                     println!("Cancel received");
@@ -123,21 +124,28 @@ impl HttpDownloadWorker {
         }
     }
 
-    pub async fn try_download(&mut self, reuse: bool) {
-        self.try_download_inner(reuse).await;
+    pub async fn try_download(&mut self, reuse: bool, reset: bool) {
+        self.try_download_inner(reuse, reset).await;
     }
 
     /// Tries downloading the file and sends the proper messages to the engine.
-    fn try_download_inner<'a>(&'a mut self, reuse: bool) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
+    fn try_download_inner<'a>(
+        &'a mut self,
+        reuse: bool,
+        reset: bool,
+    ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
         Box::pin(async move {
-            match self.start_download(reuse).await {
+            match self.start_download(reuse, reset).await {
                 Ok(Status::RangeComplete) => {
                     self.send_to_engine(ToEngineMessage::Complete(self.byte_range.clone()))
                         .await
                 }
-                Err(_) => self.send_to_engine(ToEngineMessage::Failed).await,
+                Err(e) => {
+                    println!("Error in try download inner {}", e);
+                    self.send_to_engine(ToEngineMessage::Failed).await
+                }
                 Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
-                Ok(Status::Resetting) => self.try_download_inner(reuse).await,
+                Ok(Status::Resetting) => self.try_download_inner(reuse, true).await,
                 _ => {}
             }
         })
@@ -151,8 +159,12 @@ impl HttpDownloadWorker {
     /// By Connection reuse we essentially mean when a worker has finished its download and is assigned
     /// a new byte range to download.
     /// TODO: Reuse the client
-    async fn start_download(&mut self, reuse: bool) -> Result<Status, DownloadError> {
+    async fn start_download(&mut self, reuse: bool, reset: bool) -> Result<Status, DownloadError> {
         //TODO: pass reset to method
+        println!(
+            "#{} Starting download with range {}",
+            self.worker_number, self.byte_range
+        );
         if self.progress.lock().unwrap().status == Status::Starting
             || self.is_start_not_allowed(reuse, false)
         {
@@ -164,6 +176,13 @@ impl HttpDownloadWorker {
             println!("Failed to initialize download: {}", e);
             self.progress.lock().unwrap().status = Status::Failed;
             return Err(DownloadError::Other(e.to_string()));
+        }
+        if reset {
+            println!(
+                "Resetting worker {} with range {}",
+                self.worker_number, self.byte_range
+            );
+            self.reset_status();
         }
         if let Ok(EngineToWorkerMsg::Stop) = self.from_engine_rx.try_recv() {
             println!("Download cancelled before start.");
@@ -209,7 +228,7 @@ impl HttpDownloadWorker {
                                 }
                                 None => {
                                     println!("Download finished.");
-                                    return match self.flush_buffer().await {
+                                    return match self.flush_buffer() {
                                         Ok(_) => {
                                             self.set_download_complete();
                                             Ok(Status::RangeComplete)
@@ -294,6 +313,10 @@ impl HttpDownloadWorker {
                 && new_valid_start + MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN < new_valid_end
             {
                 self.byte_range = ByteRange::new(new_range.start, new_end);
+                println!(
+                    "#{} Byte range refreshed {}",
+                    self.worker_number, self.byte_range
+                );
                 ToEngineMessage::ByteRangeRefreshOverlapped {
                     requested_range: new_range.clone(),
                     new_valid_range: ByteRange::new(self.byte_range.end + 1, prev_end_byte),
@@ -315,9 +338,12 @@ impl HttpDownloadWorker {
         }
 
         self.byte_range = new_range;
+        println!(
+            "#{} Byte range refreshed {}",
+            self.worker_number, self.byte_range
+        );
         ToEngineMessage::ByteRangeRefreshSuccess {
             requested_range: self.byte_range.clone(),
-            refreshed_range: self.byte_range.clone(),
             reuse: reuse_connection,
         }
     }
@@ -342,14 +368,14 @@ impl HttpDownloadWorker {
                 "Exceeded end byte: Current range: {}-{}, total_req: {}",
                 self.byte_range.start, self.byte_range.end, self.total_request_bytes_received
             );
-            self.flush_buffer().await?;
+            self.flush_buffer()?;
             self.cut_temp_files().await?;
             self.terminated_on_completion = true;
             self.set_download_complete();
             return Ok(true);
         }
         if self.temp_bytes_received > self.buffer_flush_threshold {
-            self.flush_buffer().await?;
+            self.flush_buffer()?;
             self.set_download_complete();
         }
         Ok(false)
@@ -406,6 +432,10 @@ impl HttpDownloadWorker {
             let filename = format!("{}#{}-{}", self.worker_number, new_start_byte, new_end_byte);
             let file_path = self.temp_directory().join(&filename);
             let mut file = File::create(&file_path)?;
+            println!(
+                "#{} New file writing with range {}-{}",
+                self.worker_number, new_start_byte, new_end_byte
+            );
             file.write_all(&buf_to_write)?;
             let file_meta = TempFileMetadata {
                 name: filename.clone(),
@@ -487,7 +517,7 @@ impl HttpDownloadWorker {
         progress.last_response_time = now_millis();
     }
 
-    async fn flush_buffer(&mut self) -> anyhow::Result<()> {
+    fn flush_buffer(&mut self) -> anyhow::Result<()> {
         if self.data_buffer.is_empty() {
             return Ok(());
         }
@@ -579,9 +609,10 @@ impl HttpDownloadWorker {
         in_range
     }
 
-    pub fn build_request(&self, reuse: bool) -> Result<Request<Empty<Bytes>>, http::Error> {
+    pub fn build_request(&mut self, reuse: bool) -> Result<Request<Empty<Bytes>>, http::Error> {
         let url = &self.download_info.url;
-        let range_header = self.resolve_range(reuse).to_header();
+        let request_range = self.resolve_range(reuse);
+        let range_header = request_range.to_header();
         let req = Request::builder()
             .method("GET")
             .uri(url)
@@ -589,7 +620,36 @@ impl HttpDownloadWorker {
             .header(range_header.0, range_header.1)
             .body(Empty::<Bytes>::new())?;
 
+        let total_existing_len = self.total_written_bytes(false);
+        let total_req_received_bytes = self.total_written_bytes(true);
+        let mut progress = self.progress.lock().unwrap();
+        progress.worker_download_progress =
+            (total_req_received_bytes / self.byte_range.len()) as f64;
+
+        self.total_bytes_received = total_existing_len;
+        self.total_request_bytes_received = total_req_received_bytes;
+        progress.total_bytes_received = self.total_bytes_received;
+        progress.total_download_progress =
+            (self.total_bytes_received / self.download_info.file_size) as f64;
+
+        if request_range.start == self.byte_range.start {
+            self.prev_buffer_end_byte = 0;
+        } else {
+            self.prev_buffer_end_byte = request_range.start - self.byte_range.start;
+        }
+
         Ok(req)
+    }
+
+    fn reset_status(&mut self) {
+        {
+            let mut progress = self.progress.lock().unwrap();
+            progress.worker_download_progress = 0f64;
+        }
+        self.total_request_bytes_received = 0;
+        self.prev_buffer_end_byte = 0;
+        self.data_buffer.clear();
+        self.reset_data_buffer();
     }
 
     fn download_exceeded_end_byte(&self) -> bool {
@@ -673,10 +733,15 @@ pub enum Status {
     Failed,
 }
 
+#[derive(Debug, Error)]
 pub enum DownloadError {
+    #[error("Transport error: {0}")]
     Transport(String),
+    #[error("Other error: {0}")]
     Other(String),
+    #[error("Process chunk error")]
     ProcessChunk,
+    #[error("Invalid command")]
     InvalidCommand,
 }
 

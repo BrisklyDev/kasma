@@ -1,6 +1,7 @@
 pub mod byte_range_tree;
 
 use hyper::header::RANGE;
+use std::cmp::Ordering;
 use std::fmt;
 
 #[derive(Clone, Debug)]
@@ -53,5 +54,22 @@ impl fmt::Display for ByteRange {
 impl AsRef<ByteRange> for ByteRange {
     fn as_ref(&self) -> &ByteRange {
         self
+    }
+}
+
+impl Eq for ByteRange {}
+
+impl PartialOrd for ByteRange {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ByteRange {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.start.cmp(&other.start) {
+            Ordering::Equal => self.end.cmp(&other.end),
+            ord => ord,
+        }
     }
 }
