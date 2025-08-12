@@ -371,44 +371,50 @@ impl ByteRangeTree {
     }
 
     pub fn split(&mut self) -> Result<(), String> {
+        // find leftmost leaf
         let mut node = {
-            let mut node = Rc::clone(&self.root);
+            let mut cursor = Rc::clone(&self.root);
             loop {
-                let left_opt = node.borrow().left_child.clone();
+                let left_opt = cursor.borrow().left_child.clone();
                 match left_opt {
-                    Some(left) => node = left,
-                    None => break node,
+                    Some(left) => cursor = left,
+                    None => break cursor,
                 }
             }
         };
-        println!("Splitting byte range node from  up");
+
         self.split_byte_range_node(&node, true)?;
+
         if Rc::ptr_eq(&node, &self.root) {
             return Ok(());
         }
 
-        let mut current_neighbor = Some(Rc::clone(node.borrow().right_neighbor.as_ref().unwrap()));
-        while let Some(current_neighbor_ref) = current_neighbor {
-            let left_child;
+        let mut current_neighbor = node.borrow().right_neighbor.clone();
+        while let Some(curr) = current_neighbor {
             {
-                let neighbor_borrow = current_neighbor_ref.borrow();
-                if neighbor_borrow.status == ByteRangeStatus::Complete {
-                    current_neighbor = neighbor_borrow.right_neighbor.clone();
+                let nb = curr.borrow();
+                if nb.status == ByteRangeStatus::Complete {
+                    current_neighbor = nb.right_neighbor.clone();
                     continue;
                 }
-                left_child = neighbor_borrow.left_child.clone();
             }
 
-            self.split_byte_range_node(&current_neighbor_ref, true)?;
+            self.split_byte_range_node(&curr, true)?;
 
-            node.borrow_mut()
-                .right_child
-                .as_ref()
-                .unwrap()
-                .borrow_mut()
-                .right_neighbor = left_child;
+            let left_child_after_split = curr.borrow().left_child.clone();
 
-            node = current_neighbor_ref.clone();
+            {
+                let node_borrow = node.borrow();
+                let right_child_rc = node_borrow
+                    .right_child
+                    .as_ref()
+                    .ok_or_else(|| "expected node.right_child to exist".to_string())?
+                    .clone();
+
+                right_child_rc.borrow_mut().right_neighbor = left_child_after_split;
+            }
+
+            node = curr;
             current_neighbor = node.borrow().right_neighbor.clone();
         }
 
@@ -443,6 +449,7 @@ impl ByteRangeTree {
     ) -> Option<NodeRef> {
         let current_node = current_node?.clone();
 
+        // Direct match
         if target == &current_node.borrow().range {
             return Some(current_node);
         }
@@ -451,11 +458,19 @@ impl ByteRangeTree {
         let r_child = node_borrow.right_child.clone();
         let l_child = node_borrow.left_child.clone();
 
-        for child_opt in [l_child, r_child] {
-            if let Some(child) = child_opt {
-                if target.is_in_range_of(&child.borrow().range) {
-                    return self.search_node_recursive(target, Some(child));
-                }
+        if r_child.is_none() || l_child.is_none() {
+            return None;
+        }
+
+        if let Some(l) = &l_child {
+            if target.is_in_range_of(&l.borrow().range) {
+                return self.search_node_recursive(target, Some(l.clone()));
+            }
+        }
+
+        if let Some(r) = &r_child {
+            if target.is_in_range_of(&r.borrow().range) {
+                return self.search_node_recursive(target, Some(r.clone()));
             }
         }
 
