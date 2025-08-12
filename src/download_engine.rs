@@ -5,20 +5,12 @@ use uuid::Uuid;
 
 pub mod http;
 pub mod utils;
+pub mod setting;
 
 pub enum EngineState {
     Complete,
     Initial,
     Running,
-}
-
-#[derive(Clone)]
-pub struct DownloadSetting {
-    pub proxy: Option<NetworkProxy>,
-    pub total_connections: u8,
-    pub base_save_dir: PathBuf,
-    pub base_temp_dir: PathBuf,
-    pub reset_timeout_millis: u64,
 }
 
 #[derive(Clone)]
@@ -54,21 +46,6 @@ impl DownloadItem {
     }
 }
 
-#[derive(Clone)]
-pub struct NetworkProxy {
-    address: String,
-    username: String,
-    password: String,
-}
-
 pub trait RunnableTask {
     fn run(&mut self);
-}
-
-pub fn run_download_engine() {
-    println!("Engine started");
-
-    // let download_handle = thread::spawn(run_download_thread);
-
-    // download_handle.join().unwrap();
 }

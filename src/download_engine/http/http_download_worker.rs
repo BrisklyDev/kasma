@@ -7,10 +7,11 @@ use crate::download_engine::http::message::{
 };
 use crate::download_engine::http::progress::WorkerProgress;
 use crate::download_engine::http::{ClientError, HttpClient};
+use crate::download_engine::setting::DownloadSetting;
 use crate::download_engine::utils::file::{TempFileMetadata, list_files_in_dir};
 use crate::download_engine::utils::now_millis;
 use crate::download_engine::utils::sync_ext::MutexAnyhowExt;
-use crate::download_engine::{DownloadItem, DownloadSetting, RunnableTask};
+use crate::download_engine::{DownloadItem, RunnableTask};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::{Request, http};
@@ -374,6 +375,9 @@ impl HttpDownloadWorker {
             self.set_download_complete();
             return Ok(true);
         }
+        if self.download_match_end_byte() {
+            println!("Matched endbyte. not doing anything");
+        }
         if self.temp_bytes_received > self.buffer_flush_threshold {
             self.flush_buffer()?;
             self.set_download_complete();
@@ -654,6 +658,10 @@ impl HttpDownloadWorker {
 
     fn download_exceeded_end_byte(&self) -> bool {
         self.byte_range.start + self.total_request_bytes_received + 1 > self.byte_range.end
+    }
+
+    fn download_match_end_byte(&self) -> bool {
+        self.byte_range.start + self.total_request_bytes_received + 1 == self.byte_range.end
     }
 
     fn temp_directory(&self) -> PathBuf {

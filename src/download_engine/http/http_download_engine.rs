@@ -9,14 +9,14 @@ use crate::download_engine::http::message::{
     DownloadCommand, EngineToMainMsg, EngineToWorkerMsg, ToEngineMessage, WorkerToEngineMsg,
 };
 use crate::download_engine::http::progress::{DownloadProgress, WorkerProgress};
+use crate::download_engine::setting::DownloadSetting;
 use crate::download_engine::utils::file::{
     TempFileMetadata, list_temp_files_sorted, resolve_versioned_file_path,
 };
 use crate::download_engine::utils::now_millis;
 use crate::download_engine::utils::sync_ext::MutexAnyhowExt;
 use crate::download_engine::{
-    DownloadInfo, DownloadItem, DownloadSetting, RunnableTask,
-    http::http_download_worker::HttpDownloadWorker,
+    DownloadInfo, DownloadItem, RunnableTask, http::http_download_worker::HttpDownloadWorker,
 };
 use anyhow::Ok;
 use std::collections::{HashMap, VecDeque};
@@ -152,8 +152,10 @@ impl HttpDownloadEngine {
         self.state = EngineState::Running;
         let mut worker_reuse_ticker = interval(Duration::from_secs(1));
         let mut worker_spawner_ticker = interval(Duration::from_secs(2));
-        let mut worker_reset_ticker = interval(Duration::from_secs(4));
-        let mut download_progress_ticker = interval(Duration::from_millis(200));
+        let mut worker_reset_ticker =
+            interval(Duration::from_millis(self.setting.reset_timeout_millis));
+        let mut download_progress_ticker =
+            interval(Duration::from_millis(self.setting.progress_polling_millis));
         self.handle_start().await?;
 
         loop {
