@@ -10,7 +10,7 @@ pub struct NetworkProxy {
 #[derive(Clone, Debug)]
 pub struct DownloadSetting {
     pub proxy: Option<NetworkProxy>,
-    pub progress_polling_millis: u64,
+    pub progress_polling_frequency_millis: u64,
     pub reset_timeout_millis: u64,
     pub total_connections: u8,
     pub base_save_dir: PathBuf,
@@ -67,7 +67,7 @@ impl DownloadSettingBuilder {
     pub fn build(self) -> DownloadSetting {
         DownloadSetting {
             proxy: self.proxy,
-            progress_polling_millis: self.progress_polling_milliseconds.unwrap_or(200),
+            progress_polling_frequency_millis: self.progress_polling_milliseconds.unwrap_or(200),
             total_connections: self.total_connections.unwrap_or(8),
             base_save_dir: self.base_save_dir.unwrap_or(PathBuf::from("./downloads")),
             base_temp_dir: self.base_temp_dir.unwrap_or(PathBuf::from("./temp")),

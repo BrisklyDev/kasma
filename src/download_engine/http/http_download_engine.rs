@@ -30,8 +30,27 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::interval;
 use uuid::Uuid;
 
-pub const MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN: u64 = 500000;
+/// Defines the minimum allowed byte range length.
+///
+/// When a byte range is smaller than this, it will no longer be split and assigned to another worker,
+/// preventing unreasonably small download requests.
+pub const MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN: u64 = 500_000;
 
+/// The interval duration at which the `worker_reuse_ticker` fires.
+pub const WORKER_REUSE_TICKER_SECS: u64 = 1;
+
+/// The interval duration at which the `worker_spawner_ticker` fires.
+pub const WORKER_SPAWNER_TICKER_SECS: u64 = 2;
+
+/// The interval duration at which the `worker_reset_ticker` fires.
+pub const WORKER_RESET_TICKER_SECS: u64 = 1;
+
+/// The download engine is responsible for spawning download workers, coordinating byte range
+/// assignments between workers, restarting hanging connections, validating the integrity of
+/// temporary files, assembling the final file, and more.
+///
+/// Essentially, it runs as an async Tokio task that manages, coordinates, and closely monitors
+/// the entire download process.
 pub struct HttpDownloadEngine {
     download_item: DownloadItem,
     state: EngineState,
@@ -124,6 +143,15 @@ impl HttpDownloadEngine {
         )
     }
 
+    /// Runs the main async task of running the engine.
+    ///
+    /// If the download item lacks prefetched info, this method fetches the file metadata
+    /// such as file size, support for range requests, and filename.
+    ///
+    /// It then starts the main event loop by calling `run_event_loop`.
+    /// On success, it is expected to terminate workers and the engine itself.
+    /// On failure, it tries to recover by performing an engine hard reset.
+    ///
     async fn run_async(&mut self) {
         if !self.download_item.prefetched_info {
             // TODO: error handling
@@ -148,14 +176,30 @@ impl HttpDownloadEngine {
         };
     }
 
+    /// Runs the engine's event loop.
+    ///
+    /// The event loop is an infinite loop over a `tokio::select!` with the following branches:
+    /// - `self.from_main_rx.recv()`: listens to commands like pause/resume from the main thread.
+    /// - `self.from_worker_rx.recv()`: listens to messages from download workers, typically responses to engine requests.
+    /// - `worker_reuse_ticker.tick()`: ticker that adds new connections dynamically during the download.
+    /// - `worker_reset_ticker.tick()`: ticker that resets hanging connections.
+    /// - `download_progress_ticker.tick()`: ticker that polls download progress and performs calculations
+    ///   such as speed and time remaining.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event loop encounters a failure during execution.
+    /// Such failures are handled in `run_async` by performing an engine hard reset.
     async fn run_event_loop(&mut self) -> anyhow::Result<()> {
         self.state = EngineState::Running;
-        let mut worker_reuse_ticker = interval(Duration::from_secs(1));
-        let mut worker_spawner_ticker = interval(Duration::from_secs(2));
-        let mut worker_reset_ticker =
-            interval(Duration::from_millis(self.setting.reset_timeout_millis));
-        let mut download_progress_ticker =
-            interval(Duration::from_millis(self.setting.progress_polling_millis));
+
+        let mut worker_reuse_ticker = interval(Duration::from_secs(WORKER_REUSE_TICKER_SECS));
+        let mut worker_spawner_ticker = interval(Duration::from_secs(WORKER_SPAWNER_TICKER_SECS));
+        let mut worker_reset_ticker = interval(Duration::from_secs(WORKER_RESET_TICKER_SECS));
+        let mut download_progress_ticker = interval(Duration::from_millis(
+            self.setting.progress_polling_frequency_millis,
+        ));
+
         self.handle_start().await?;
 
         loop {
@@ -169,9 +213,9 @@ impl HttpDownloadEngine {
                     DownloadCommand::Pause => self.pause_workers().await?,
                 },
                 Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg).await?,
-                // _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker()?,
+                _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker()?,
                 _ = worker_spawner_ticker.tick() => self.run_worker_spawner_ticker().await?,
-                // _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
+                _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
                 _ = download_progress_ticker.tick() => self.handle_progress_updates()?,
             }
         }
@@ -289,6 +333,8 @@ impl HttpDownloadEngine {
         Ok(speed_bytes)
     }
 
+    /// Sends a reset command to the workers that have not responded to the reset command in the
+    /// last (self.setting.reset_timeout_millis) miliseconds.
     async fn run_worker_reset_ticker(&self) -> anyhow::Result<()> {
         let connections_to_reset = self.workers.iter().filter(|x| {
             let progress = x.1.progress_arc.lock().unwrap();
@@ -780,6 +826,18 @@ impl HttpDownloadEngine {
         }
     }
 
+    /// Handles the start command for the download engine.
+    ///
+    /// On the initial start, it validates the integrity of temporary files to remove any corrupted files.
+    /// It then builds the byte range tree based on missing byte ranges (those not yet downloaded).
+    ///
+    /// If the missing byte ranges are empty (i.e., this is a fresh download), the first download worker
+    /// is spawned and assigned the entire byte range. Additional workers will be gradually spawned
+    /// by `run_worker_spawner_ticker` if the file size justifies it.
+    ///
+    /// If the missing byte ranges are not empty (i.e., resuming a previous download), all allowed
+    /// connections are created immediately.
+    ///
     async fn handle_start(&mut self) -> anyhow::Result<()> {
         if self.workers.is_empty() && self.byte_range_tree.is_none() {
             println!("Inside start");
