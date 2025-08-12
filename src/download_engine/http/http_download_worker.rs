@@ -23,8 +23,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::vec;
-use thiserror::Error;
 use tokio::sync::mpsc::{Receiver, Sender};
+use crate::download_engine::errors::DownloadError;
 
 const SPEED_CHECK_WINDOW_MILLIS: u32 = 1100;
 const MIN_FLUSH: u64 = 64 * 1024; // 64 KB
@@ -90,7 +90,6 @@ impl HttpDownloadWorker {
 
 impl RunnableTask for HttpDownloadWorker {
     fn run(&mut self) {
-        println!("Spawned download thread");
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -269,7 +268,7 @@ impl HttpDownloadWorker {
                                     match frame {
                                         Some(Ok(chunk)) => {
                                             match self.process_chunk(chunk).await {
-                                                Ok(stop) if stop => return Ok(Status::RangeComplete),
+                                                Ok(stop) if stop => return Ok(RangeComplete),
                                                 Ok(_) => {}
                                                 Err(_) => return Err(DownloadError::ProcessChunk),
                                             }
@@ -278,14 +277,7 @@ impl HttpDownloadWorker {
                                             return Err(DownloadError::Other(e.to_string()));
                                         }
                                         None => {
-                                            println!("Download finished.");
-                                            return match self.flush_buffer() {
-                                                Ok(_) => {
-                                                    self.set_download_complete();
-                                                    Ok(Status::RangeComplete)
-                                                }
-                                                Err(_) => Err(DownloadError::ProcessChunk),
-                                            };
+                                            return self.handle_download_complete();
                                         }
                                     }
                                 },
@@ -293,16 +285,28 @@ impl HttpDownloadWorker {
                         }
                     }
                     Err(e) => {
-                        return Err(DownloadError::Transport(e.to_string()));
+                        Err(DownloadError::Transport(e.to_string()))
                     }
                 }
             }
         }
     }
 
+    fn handle_download_complete(&mut self) -> Result<Status, DownloadError> {
+        println!("Download finished.");
+        match self.flush_buffer() {
+            Ok(_) => {
+                self.set_download_complete();
+                Ok(RangeComplete)
+            }
+            Err(_) => Err(DownloadError::ProcessChunk),
+        }
+    }
+
     fn handle_stop_message(&mut self) {
         println!("Cancel message received from engine. Exiting download...");
         self.progress.lock().unwrap().status = Status::Stopped;
+        self.status_downloading = false;
     }
 
     async fn handle_refresh_byte_range_message(&mut self, new_range: ByteRange, reuse: bool) {
@@ -426,6 +430,8 @@ impl HttpDownloadWorker {
         if !self.status_downloading {
             self.progress.lock_anyhow()?.status = Status::Downloading;
             self.status_downloading = true;
+            self.send_to_engine(ToEngineMessage::ConnectionSuccess)
+                .await;
         }
         let chunk = data.data_ref().unwrap().clone();
         let chunk_size = chunk.len() as u64;
@@ -809,33 +815,4 @@ pub enum Status {
     Starting,
     Connecting,
     Failed,
-}
-
-#[derive(Debug, Error)]
-pub enum DownloadError {
-    #[error("Transport error: {0}")]
-    Transport(String),
-    #[error("Other error: {0}")]
-    Other(String),
-    #[error("Process chunk error")]
-    ProcessChunk,
-    #[error("Invalid command")]
-    InvalidCommand,
-}
-
-impl From<ClientError> for DownloadError {
-    fn from(err: ClientError) -> Self {
-        match err {
-            ClientError::Transport(transport_err) => {
-                DownloadError::Transport(transport_err.to_string())
-            }
-            ClientError::Other(other_err) => DownloadError::Other(other_err),
-        }
-    }
-}
-
-impl From<hyper::http::Error> for DownloadError {
-    fn from(err: hyper::http::Error) -> Self {
-        DownloadError::Other(err.to_string())
-    }
 }

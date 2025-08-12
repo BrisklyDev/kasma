@@ -5,6 +5,11 @@ pub enum DownloadCommand {
     Start,
 }
 
+pub struct ButtonAvailability {
+    pub pause_available: bool,
+    pub resume_available: bool,
+}
+
 #[derive(Debug)]
 pub enum EngineToWorkerMsg {
     Start,
@@ -27,6 +32,7 @@ pub struct WorkerToEngineMsg {
 
 #[derive(Debug)]
 pub enum ToEngineMessage {
+    ConnectionSuccess,
     Complete(ByteRange),
     HandshakeResponse {
         reuse: bool,

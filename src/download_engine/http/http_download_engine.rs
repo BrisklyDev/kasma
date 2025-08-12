@@ -18,6 +18,7 @@ use crate::download_engine::utils::sync_ext::MutexAnyhowExt;
 use crate::download_engine::{
     DownloadInfo, DownloadItem, RunnableTask, http::http_download_worker::HttpDownloadWorker,
 };
+use crate::engine_warn;
 use anyhow::Ok;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
@@ -170,8 +171,8 @@ impl HttpDownloadEngine {
                 // TODO: terminate workers
             }
             Err(e) => {
-                print!("Error: {}", e);
-                // TODO: restart engine
+                println!("{}", e);
+                // TODO: Restart engine
             }
         };
     }
@@ -221,6 +222,10 @@ impl HttpDownloadEngine {
         }
     }
 
+    /// Polls the overall download progress and calculates overall download speed, estimated time
+    /// remaining. At the end, it also calls `assemble_file` if assemble eligible
+    /// (all workers finished their downloads)
+    ///
     fn handle_progress_updates(&mut self) -> anyhow::Result<()> {
         let total_bytes_speed = self.calculate_total_speed()?;
         let is_temp_write_complete = self.check_temp_write_completion()?;
@@ -233,6 +238,19 @@ impl HttpDownloadEngine {
         );
 
         Ok(())
+    }
+
+    fn speed_in_bytes_to_readable_string(&self, speed_bytes: u64) -> String {
+        let speed_in_mega_bytes = speed_bytes as f64 / 1048576.0;
+        let speed_in_kilo_bytes = speed_bytes as f64 / 1024.0;
+
+        if speed_in_mega_bytes > 1.0 {
+            format!("{:.2} MB/s", speed_in_mega_bytes)
+        } else if speed_in_kilo_bytes > 1.0 {
+            format!("{:.2} KB/s", speed_in_kilo_bytes)
+        } else {
+            format!("{:.2} B/s", speed_bytes)
+        }
     }
 
     fn calculate_estimated_remaining(&mut self, bytes_speed: u64) -> anyhow::Result<()> {
@@ -368,7 +386,7 @@ impl HttpDownloadEngine {
         let worker = self.workers.get(&worker_num);
         if worker.is_none() {
             anyhow::bail!(
-                "request_byte_range_refresh_reuse_worker:: Failed to find worker_num {} in list of workers",
+                "request_byte_range_refresh_reuse_worker:: Fatal! Failed to find worker_num {} in list of workers",
                 worker_num
             )
         }
@@ -386,11 +404,8 @@ impl HttpDownloadEngine {
         };
 
         if nodes.is_empty() {
-            println!(
-                "request_byte_range_refresh_reuse_worker:: Fatal! Failed to find segment node!"
-            );
             self.reuse_worker_queue.push_back(worker_num);
-            return Ok(());
+            engine_warn!("request_byte_range_refresh_reuse_worker:: Failed to find segment node!")
         }
 
         nodes.sort_by(|a, b| a.borrow().range.cmp(&b.borrow().range));
@@ -399,9 +414,8 @@ impl HttpDownloadEngine {
             .find(|x| x.borrow().range != worker_handle.range);
 
         if target_node.is_none() {
-            println!("request_byte_range_refresh_reuse_worker:: Fatal! Target node is none!");
             self.reuse_worker_queue.push_back(worker_num);
-            return Ok(());
+            engine_warn!("request_byte_range_refresh_reuse_worker:: Target node is none!")
         }
         let mut target_node_borrow = target_node.unwrap().borrow_mut();
 
@@ -414,12 +428,12 @@ impl HttpDownloadEngine {
         let split_result = byte_range_tree.split_byte_range_node(target_node.unwrap(), false);
         println!("Post-split byte range tree:\n{}", byte_range_tree);
         if split_result.is_err() {
-            println!(
-                "Failed to split node worker_num::{} with range {}",
-                worker_num, target_node_borrow.range
-            );
-            println!("Tree:\n{}", byte_range_tree);
-            return Ok(());
+            engine_warn!(
+                "request_byte_range_refresh_reuse_worker:: Failed to split node worker_num {} with range {} \n Tree:\n{}",
+                worker_num,
+                target_node_borrow.range,
+                byte_range_tree
+            )
         }
 
         if let Some(right_child) = target_node_borrow.right_child.as_ref() {
@@ -457,8 +471,10 @@ impl HttpDownloadEngine {
         let byte_range_tree = self.byte_range_tree.as_mut().unwrap();
         println!("Pre-split byte range tree:\n{}", byte_range_tree);
         if let Err(e) = byte_range_tree.split() {
-            println!("request_byte_range_refresh_new_worker:: Fatal! {}", e);
-            return Ok(());
+            engine_warn!(
+                "request_byte_range_refresh_new_worker:: Failed to split tree {}",
+                e
+            )
         }
         println!("Post-split byte range tree:\n{}", byte_range_tree);
         println!("Refreshing worker ranges...");
@@ -470,8 +486,7 @@ impl HttpDownloadEngine {
                 .find(|x| x.borrow().worker_number == *worker_number);
 
             if related_node.is_none() {
-                println!("Fatal error occurred! relatedSegmentNode is null!");
-                return Ok(());
+                engine_warn!("Fatal error occurred! relatedSegmentNode is null!")
             }
             let mut node = related_node.unwrap().borrow_mut();
             println!(
@@ -556,8 +571,23 @@ impl HttpDownloadEngine {
             ToEngineMessage::HandshakeResponse { reuse } => {
                 self.handle_worker_handshake(msg.worker_number, reuse);
             }
+            ToEngineMessage::ConnectionSuccess => {
+                self.handle_worker_connection_success(msg.worker_number)?;
+            }
         }
         Ok(())
+    }
+
+    fn handle_worker_connection_success(&mut self, worker_number: u8) -> anyhow::Result<()> {
+        if let Some(worker) = self.workers.get_mut(&worker_number) {
+            worker.awaiting_reset_response = false;
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "handle_worker_connection_success:: Failed to find worker_num {} in list of workers",
+            worker_number
+        )
     }
 
     fn handle_worker_handshake(&mut self, worker_num: u8, reuse: bool) {
@@ -619,15 +649,14 @@ impl HttpDownloadEngine {
             worker_num, requested_range
         );
         if self.byte_range_tree.is_none() {
-            return Ok(());
+            engine_warn!("handle_refresh_byte_range_overlap:: Byte range tree is empty")
         }
 
         let tree_ref = self.byte_range_tree.as_ref().unwrap();
         print!("{}", tree_ref);
         let node = tree_ref.search_node(&requested_range);
         if node.is_none() {
-            println!("Fatal:: _handleRefreshSegmentSuccess:: Failed to find segment node.");
-            return Ok(());
+            engine_warn!("handle_refresh_byte_range_overlap:: Failed to find segment node.");
         }
 
         self.update_worker_range(worker_num, refreshed_range.clone())?;
@@ -685,8 +714,7 @@ impl HttpDownloadEngine {
         let tree_ref = self.byte_range_tree.as_ref().unwrap();
         let node = tree_ref.search_node(requested_range);
         if node.is_none() {
-            println!("Fatal:: _handleRefreshSegmentSuccess:: Failed to find segment node.");
-            return Ok(());
+            engine_warn!("handle_refresh_byte_range_refused:: Failed to find segment node.")
         }
         let parent_weak = node.unwrap().borrow().parent.clone();
         let parent_rc = parent_weak.upgrade().unwrap();
@@ -727,7 +755,7 @@ impl HttpDownloadEngine {
             if let Some(idx) = l_idx {
                 tree.lowest_level_nodes.remove(idx);
             } else {
-                println!("Fatal:: failed to find left child node in lowest level nodes!");
+                println!("failed to find left child node in lowest level nodes!");
             }
 
             let r_idx = tree
@@ -738,12 +766,10 @@ impl HttpDownloadEngine {
             if let Some(idx) = r_idx {
                 tree.lowest_level_nodes.remove(idx);
             } else {
-                println!("Fatal:: failed to find right child node in lowest level nodes!");
+                println!("failed to find right child node in lowest level nodes!");
             }
         } else {
-            println!(
-                "RefreshSegmentRefused:: Fatal error occurred! Failed to find segment node to insert"
-            );
+            println!("RefreshSegmentRefused:: Failed to find segment node to insert");
         }
 
         Ok(())
@@ -766,8 +792,7 @@ impl HttpDownloadEngine {
         print!("{}", tree);
         let node = tree.search_node(&requested_range);
         if node.is_none() {
-            println!("Fatal:: _handleRefreshSegmentSuccess:: Failed to find segment node.");
-            return Ok(());
+            engine_warn!("handle_refresh_byte_range_success:: Failed to find segment node")
         }
         let parent_weak = node.unwrap().borrow().parent.clone();
         let parent_rc = parent_weak.upgrade().unwrap();

@@ -32,7 +32,7 @@ fn main() {
         .reset_timeout_millis(6000)
         .progress_polling_milliseconds(200)
         .build();
-    
+
     let handle = thread::spawn(move || {
         HttpDownloadEngine::new(main_to_engine_rx, engine_to_main_tx, info, setting, None)
             .0

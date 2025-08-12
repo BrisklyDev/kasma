@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod http;
-pub mod utils;
 pub mod setting;
+pub mod utils;
+mod errors;
+mod macros;
 
 pub enum EngineState {
     Complete,
