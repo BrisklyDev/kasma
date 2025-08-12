@@ -152,14 +152,27 @@ impl HttpDownloadWorker {
         })
     }
 
-    /// Starts the download and retries if failed.
-    /// The `from_engine_rx` is listened for any actions necessary inside the loop. The loop uses a
-    /// `tokio:select` macro between the received chunk and messages from the engine to take actions
-    /// based on those messages, e.g., to stop the download.
-    /// `reuse` indicates if this start method is called with a connection reuse intention.
-    /// By Connection reuse we essentially mean when a worker has finished its download and is assigned
-    /// a new byte range to download.
-    /// TODO: Reuse the client
+    /// Starts the download process.
+    ///
+    /// The worker is initialized with proper values and then a `tokio::select!` runs with two branches:
+    ///
+    /// - `self.from_engine_rx.recv()`: listens to messages coming from the engine.
+    /// - `response = client.send(req)`: sends the HTTP request via hyper.
+    ///
+    /// The purpose of this initial `tokio::select!` is to handle scenarios such as:
+    /// the request is sent but takes time due to network or server issues. While waiting,
+    /// if a reset or pause command is received from the engine, it is processed immediately
+    /// because the select is biased toward listening to engine messages first, allowing
+    /// the download to terminate instantaneously without waiting for the network.
+    ///
+    /// If the request completes successfully without interruption, an infinite loop over another
+    /// `tokio::select!` is run. This loop also listens to `self.from_engine_rx.recv()` for engine
+    /// messages, while simultaneously processing the incoming data chunks from the network.
+    ///
+    /// The `reuse` parameter indicates whether this start is for connection reuse:
+    /// when a worker finishes downloading and is assigned a new byte range.
+    ///
+    /// TODO: Implement HTTP client reuse.
     async fn start_download(&mut self, reuse: bool, reset: bool) -> Result<Status, DownloadError> {
         //TODO: pass reset to method
         println!(
@@ -190,60 +203,117 @@ impl HttpDownloadWorker {
             self.progress.lock().unwrap().status = Status::Stopped;
             return Ok(Status::Stopped);
         }
-        match client.send(req).await {
-            Ok(resp) => {
-                let mut body = resp.into_body();
-                loop {
-                    tokio::select! {
-                        biased;
-                        Some(msg) = self.from_engine_rx.recv() => {
-                            match msg {
-                                EngineToWorkerMsg::Stop => {
-                                    println!("Cancel message received from engine. Exiting download...");
-                                    self.progress.lock().unwrap().status = Status::Stopped;
-                                    return Ok(Status::Stopped);
-                                }
-                                RefreshByteRange(new_range, reuse) => {
-                                    let result = self.refresh_byte_range(new_range, reuse);
-                                    self.send_to_engine(result).await;
-                                }
-                                EngineToWorkerMsg::Reset => {
-                                    println!("Reset message received from engine. Exiting download...");
-                                    self.progress.lock().unwrap().status = Status::Resetting;
-                                    return Ok(Status::Resetting);
-                                }
-                                _ => {}
-                            }
-                        },
-                        frame = body.frame() => {
-                            match frame {
-                                Some(Ok(chunk)) => {
-                                    match self.process_chunk(chunk).await {
-                                        Ok(stop) if stop => return Ok(Status::RangeComplete),
-                                        Ok(_) => {}
-                                        Err(_) => return Err(DownloadError::ProcessChunk),
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    return Err(DownloadError::Other(e.to_string()))
-                                }
-                                None => {
-                                    println!("Download finished.");
-                                    return match self.flush_buffer() {
-                                        Ok(_) => {
-                                            self.set_download_complete();
-                                            Ok(Status::RangeComplete)
+
+        tokio::select! {
+            biased;
+
+            Some(msg) = self.from_engine_rx.recv() => {
+                match msg {
+                    EngineToWorkerMsg::Stop => {
+                        self.handle_stop_message();
+                        Ok(Status::Stopped)
+                    }
+                    RefreshByteRange(new_range, reuse) => {
+                        self.handle_refresh_byte_range_message(new_range, reuse).await;
+                        Ok(Status::Resetting)
+                    }
+                    EngineToWorkerMsg::Reset => {
+                        self.handle_reset_message();
+                        Ok(Status::Resetting)
+                    }
+                    EngineToWorkerMsg::Start => {
+                        /// TODO fix
+                        Ok(Status::Resetting)
+                    },
+                    EngineToWorkerMsg::StartReuseConnection(_) => {
+                        /// TODO fix
+                        Ok(Status::Resetting)
+                    }
+                }
+            },
+
+            response = client.send(req) => {
+                match response {
+                    Ok(resp) => {
+                        let mut body = resp.into_body();
+
+                        loop {
+                            tokio::select! {
+                                biased;
+
+                                Some(msg) = self.from_engine_rx.recv() => {
+                                    match msg {
+                                        EngineToWorkerMsg::Stop => {
+                                            self.handle_stop_message();
+                                            return Ok(Status::Stopped);
                                         }
-                                        Err(_) => Err(DownloadError::ProcessChunk),
+                                        RefreshByteRange(new_range, reuse) => {
+                                            self.handle_refresh_byte_range_message(new_range, reuse).await;
+                                        }
+                                        EngineToWorkerMsg::Reset => {
+                                            self.handle_reset_message();
+                                            return Ok(Status::Resetting);
+                                        },
+                                        EngineToWorkerMsg::Start => {
+                                            /// TODO fix
+                                            return Ok(Status::Resetting);
+                                        },
+                                        EngineToWorkerMsg::StartReuseConnection(_) => {
+                                            /// TODO fix
+                                            return Ok(Status::Resetting);
+                                        }
                                     }
-                                }
+                                },
+
+                                frame = body.frame() => {
+                                    match frame {
+                                        Some(Ok(chunk)) => {
+                                            match self.process_chunk(chunk).await {
+                                                Ok(stop) if stop => return Ok(Status::RangeComplete),
+                                                Ok(_) => {}
+                                                Err(_) => return Err(DownloadError::ProcessChunk),
+                                            }
+                                        }
+                                        Some(Err(e)) => {
+                                            return Err(DownloadError::Other(e.to_string()));
+                                        }
+                                        None => {
+                                            println!("Download finished.");
+                                            return match self.flush_buffer() {
+                                                Ok(_) => {
+                                                    self.set_download_complete();
+                                                    Ok(Status::RangeComplete)
+                                                }
+                                                Err(_) => Err(DownloadError::ProcessChunk),
+                                            };
+                                        }
+                                    }
+                                },
                             }
                         }
                     }
+                    Err(e) => {
+                        return Err(DownloadError::Transport(e.to_string()));
+                    }
                 }
             }
-            Err(e) => Err(DownloadError::Transport(e.to_string())),
         }
+    }
+
+    fn handle_stop_message(&mut self) {
+        println!("Cancel message received from engine. Exiting download...");
+        self.progress.lock().unwrap().status = Status::Stopped;
+    }
+
+    async fn handle_refresh_byte_range_message(&mut self, new_range: ByteRange, reuse: bool) {
+        let result = self.refresh_byte_range(new_range, reuse);
+        self.send_to_engine(result).await;
+    }
+
+    fn handle_reset_message(&mut self) {
+        println!("Reset message received from engine. Exiting download...");
+        self.progress.lock().unwrap().status = Status::Resetting;
+        self.status_downloading = false;
     }
 
     fn is_start_not_allowed(&self, reuse: bool, conn_reset: bool) -> bool {
@@ -269,7 +339,7 @@ impl HttpDownloadWorker {
 
     async fn init(&mut self) -> anyhow::Result<()> {
         {
-            self.progress.lock().unwrap().status = Status::Connecting;
+            self.progress.lock_anyhow()?.status = Status::Connecting;
         }
         self.terminated_on_completion = false;
         self.total_request_bytes_received = 0;
@@ -354,7 +424,7 @@ impl HttpDownloadWorker {
     /// TODO: Gracefully handle poisoned locks to send panic to the engine and recover
     async fn process_chunk(&mut self, data: Frame<Bytes>) -> anyhow::Result<bool> {
         if !self.status_downloading {
-            self.progress.lock().unwrap().status = Status::Downloading;
+            self.progress.lock_anyhow()?.status = Status::Downloading;
             self.status_downloading = true;
         }
         let chunk = data.data_ref().unwrap().clone();
