@@ -10,3 +10,13 @@ macro_rules! engine_warn {
         return Ok(());
     }};
 }
+
+#[macro_export]
+macro_rules! unwrap_or_bail {
+    ($opt:expr, $($arg:tt)*) => {
+        match $opt {
+            Some(val) => val,
+            None => anyhow::bail!($($arg)*),
+        }
+    };
+}

@@ -18,8 +18,9 @@ use crate::download_engine::utils::sync_ext::MutexAnyhowExt;
 use crate::download_engine::{
     DownloadInfo, DownloadItem, RunnableTask, http::http_download_worker::HttpDownloadWorker,
 };
-use crate::engine_warn;
-use anyhow::Ok;
+use crate::{engine_warn, unwrap_or_bail};
+use anyhow::{Ok, anyhow};
+use std::cmp::PartialEq;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -62,6 +63,7 @@ pub struct HttpDownloadEngine {
     reuse_worker_queue: VecDeque<u8>,
     byte_range_tree: Option<ByteRangeTree>,
     workers: HashMap<u8, DownloadWorkerHandle>,
+    assemble_requested: bool,
     progress: DownloadProgress,
     last_estimation_calc_time: u128,
     from_worker_tx: Sender<WorkerToEngineMsg>,
@@ -70,8 +72,10 @@ pub struct HttpDownloadEngine {
 }
 
 pub struct DownloadWorkerHandle {
+    assigned_to_worker: bool,
     range: ByteRange,
     to_worker_tx: Sender<EngineToWorkerMsg>,
+    engine_to_worker_rx: Option<Receiver<EngineToWorkerMsg>>,
     progress_arc: Arc<Mutex<WorkerProgress>>,
     awaiting_reset_response: bool,
 }
@@ -134,7 +138,8 @@ impl HttpDownloadEngine {
                 workers: HashMap::new(),
                 progress: DownloadProgress::new(),
                 last_estimation_calc_time: 0,
-                spawned_workers: 0,
+                spawned_workers: 1,
+                assemble_requested: false,
                 from_worker_rx: worker_to_engine_rx,
                 from_worker_tx: worker_to_engine_tx,
                 pending_worker_handshakes: Vec::new(),
@@ -214,9 +219,9 @@ impl HttpDownloadEngine {
                     DownloadCommand::Pause => self.pause_workers().await?,
                 },
                 Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg).await?,
-                _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker()?,
+                // _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker()?,
                 _ = worker_spawner_ticker.tick() => self.run_worker_spawner_ticker().await?,
-                _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
+                // _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
                 _ = download_progress_ticker.tick() => self.handle_progress_updates()?,
             }
         }
@@ -228,14 +233,48 @@ impl HttpDownloadEngine {
     ///
     fn handle_progress_updates(&mut self) -> anyhow::Result<()> {
         let total_bytes_speed = self.calculate_total_speed()?;
+        let readable_speed = self.speed_in_bytes_to_readable_string(total_bytes_speed);
         let is_temp_write_complete = self.check_temp_write_completion()?;
         self.progress.total_download_progress = self.calculate_total_progress()?;
         self.calculate_estimated_remaining(total_bytes_speed)?;
-        println!("Total download speed: {}", total_bytes_speed);
         println!(
             "Total download progress: {}",
             self.progress.total_download_progress
         );
+        println!("Total Speed: {}", readable_speed);
+        self.set_overall_download_status()?;
+        if self.progress.total_download_progress > 1.0 {
+            anyhow::bail!("Fatal! Overall progress exceeded 1")
+        }
+        if is_temp_write_complete && self.is_assemble_eligible() {
+            self.assemble_file()?;
+        }
+        Ok(())
+    }
+
+    fn set_overall_download_status(&mut self) -> anyhow::Result<()> {
+        let worker_progresses = self
+            .workers
+            .iter()
+            .map(|w| w.1.progress_arc.lock_anyhow())
+            .collect::<anyhow::Result<Vec<MutexGuard<WorkerProgress>>>>()?;
+
+        let all_connecting = worker_progresses
+            .iter()
+            .all(|p| p.status == Status::Connecting);
+
+        if all_connecting {
+            self.progress.status = Status::Connecting;
+            return Ok(());
+        }
+
+        let any_downloading = worker_progresses
+            .iter()
+            .any(|p| p.status == Status::Downloading);
+
+        if any_downloading {
+            self.progress.status = Status::Downloading;
+        }
 
         Ok(())
     }
@@ -320,6 +359,7 @@ impl HttpDownloadEngine {
         let progress_vec = self
             .workers
             .iter()
+            .filter(|w| w.1.assigned_to_worker)
             .map(|w| w.1.progress_arc.lock_anyhow())
             .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -334,12 +374,15 @@ impl HttpDownloadEngine {
         if !all_complete {
             return Ok(false);
         }
-        self.validate_temp_files_integrity(true, true, true)?;
         let missing_ranges = self.find_missing_byte_ranges()?;
         for range in &missing_ranges {
             println!("Missing range:: {}", range);
         }
-        Ok(missing_ranges.is_empty())
+        if missing_ranges.is_empty() && self.state == EngineState::WorkersComplete {
+            return Ok(true);
+        }
+        self.validate_temp_files_integrity(true, true, true)?;
+        Ok(false)
     }
 
     fn calculate_total_speed(&self) -> anyhow::Result<u64> {
@@ -352,15 +395,17 @@ impl HttpDownloadEngine {
     }
 
     /// Sends a reset command to the workers that have not responded to the reset command in the
-    /// last (self.setting.reset_timeout_millis) miliseconds.
+    /// last (self.setting.reset_timeout_millis) milliseconds.
     async fn run_worker_reset_ticker(&self) -> anyhow::Result<()> {
-        let connections_to_reset = self.workers.iter().filter(|x| {
-            let progress = x.1.progress_arc.lock().unwrap();
-            !matches!(
-                &progress.status,
-                Status::Stopped | Status::Starting | Status::Complete
-            ) && progress.last_response_time + (self.setting.reset_timeout_millis as u128)
-                < now_millis()
+        let connections_to_reset = self.workers.iter().filter(|w| {
+            let progress = w.1.progress_arc.lock().unwrap();
+            w.1.assigned_to_worker
+                && !matches!(
+                    &progress.status,
+                    Status::Stopped | Status::Starting | Status::Complete
+                )
+                && progress.last_response_time + (self.setting.reset_timeout_millis as u128)
+                    < now_millis()
         });
         for worker in connections_to_reset {
             worker.1.to_worker_tx.send(EngineToWorkerMsg::Reset).await?;
@@ -383,14 +428,11 @@ impl HttpDownloadEngine {
 
     fn request_byte_range_refresh_reuse_worker(&mut self, worker_num: u8) -> anyhow::Result<()> {
         let byte_range_tree = self.byte_range_tree.as_mut().unwrap();
-        let worker = self.workers.get(&worker_num);
-        if worker.is_none() {
-            anyhow::bail!(
-                "request_byte_range_refresh_reuse_worker:: Fatal! Failed to find worker_num {} in list of workers",
-                worker_num
-            )
-        }
-        let worker_handle = worker.unwrap();
+        let worker_handle = unwrap_or_bail!(
+            self.workers.get(&worker_num),
+            "request_byte_range_refresh_reuse_worker:: Fatal! Failed to find worker_num {} in list of workers",
+            worker_num
+        );
 
         let in_queue_nodes =
             byte_range_tree.lowest_level_nodes_by_status(ByteRangeStatus::ToDownloadInQueue);
@@ -479,6 +521,9 @@ impl HttpDownloadEngine {
         println!("Post-split byte range tree:\n{}", byte_range_tree);
         println!("Refreshing worker ranges...");
         for (worker_number, handle) in &self.workers {
+            if !handle.assigned_to_worker {
+                continue;
+            }
             println!("processing worker {}", worker_number);
             let related_node = byte_range_tree
                 .lowest_level_nodes
@@ -633,6 +678,13 @@ impl HttpDownloadEngine {
             );
         }
         node.unwrap().borrow_mut().status = ByteRangeStatus::Complete;
+        let all_ranges_complete = tree_ref
+            .lowest_level_nodes
+            .iter()
+            .all(|n| n.borrow().status == ByteRangeStatus::Complete);
+        if all_ranges_complete {
+            self.state = EngineState::WorkersComplete;
+        }
         Ok(())
     }
 
@@ -695,7 +747,7 @@ impl HttpDownloadEngine {
                 .await?;
             new_worker_node.borrow_mut().status = ByteRangeStatus::Downloading;
         } else {
-            self.spawn_worker(new_worker_number, right_child_rc).await;
+            self.spawn_worker(new_worker_number, right_child_rc).await?;
         }
 
         Ok(())
@@ -771,7 +823,7 @@ impl HttpDownloadEngine {
         } else {
             println!("RefreshSegmentRefused:: Failed to find segment node to insert");
         }
-
+        parent_rc.borrow_mut().remove_children();
         Ok(())
     }
 
@@ -864,8 +916,9 @@ impl HttpDownloadEngine {
     /// connections are created immediately.
     ///
     async fn handle_start(&mut self) -> anyhow::Result<()> {
-        if self.workers.is_empty() && self.byte_range_tree.is_none() {
+        if self.byte_range_tree.is_none() {
             println!("Inside start");
+            self.prepopulate_worker_handles();
             self.validate_temp_files_integrity(true, true, false)?;
             let missing_ranges = self.find_missing_byte_ranges()?;
             if missing_ranges.is_empty() && self.is_assemble_eligible() {
@@ -886,38 +939,72 @@ impl HttpDownloadEngine {
             println!("Tree result: {}", tree);
             self.byte_range_tree = Some(tree);
             let node_ref = self.byte_range_tree.as_ref().unwrap().root.clone();
-            self.spawn_worker(0, node_ref).await;
+            self.spawn_worker(0, node_ref).await?;
         } else {
             // TODO: handle resume not initial
         }
         Ok(())
     }
 
-    async fn spawn_worker(&mut self, worker_num: u8, tree_node: NodeRef) {
-        let (engine_to_worker_tx, engine_to_worker_rx) =
-            tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
-        let progress = Arc::new(Mutex::new(WorkerProgress::new()));
-        let mut node = tree_node.borrow_mut();
-        let worker_handle = DownloadWorkerHandle {
-            range: node.range.clone(),
-            to_worker_tx: engine_to_worker_tx.clone(),
-            progress_arc: progress.clone(),
-            awaiting_reset_response: false,
+    /// Pre-assigns worker handles for a given number of workers before they are spawned.
+    ///
+    /// This allows sending messages to workers that have not yet spawned by the `worker_spawner_ticker`.
+    /// For example, if a pause command arrives just before a worker is spawned, the message can
+    /// still be queued on the appropriate channel and will be received as soon as the worker starts.
+    fn prepopulate_worker_handles(&mut self) {
+        for worker_num in 0..self.setting.total_connections {
+            println!("Prepopulating worker #{}", worker_num);
+            let (to_worker_tx, from_engine_rx) =
+                tokio::sync::mpsc::channel::<EngineToWorkerMsg>(100);
+            let progress = Arc::new(Mutex::new(WorkerProgress::new()));
+            let worker_handle = DownloadWorkerHandle {
+                assigned_to_worker: false,
+                range: ByteRange::empty(),
+                to_worker_tx: to_worker_tx.clone(),
+                engine_to_worker_rx: Some(from_engine_rx),
+                progress_arc: progress.clone(),
+                awaiting_reset_response: false,
+            };
+            self.workers.insert(worker_num, worker_handle);
+        }
+    }
+
+    async fn spawn_worker(&mut self, worker_num: u8, tree_node: NodeRef) -> anyhow::Result<()> {
+        let handle = unwrap_or_bail!(
+            self.workers.get_mut(&worker_num),
+            "Failed to spawn worker #{}. Handle not found",
+            worker_num
+        );
+
+        let engine_to_worker_rx = unwrap_or_bail!(
+            handle.engine_to_worker_rx.take(),
+            "Failed to spawn worker #{}. receiver not found",
+            worker_num
+        );
+
+        let range = {
+            let mut node = tree_node.borrow_mut();
+            node.status = ByteRangeStatus::Downloading;
+            node.range.clone()
         };
-        self.workers.insert(worker_num, worker_handle);
-        node.status = ByteRangeStatus::Downloading;
-        println!("Spawned worker #{}", worker_num);
+
         let mut worker = HttpDownloadWorker::new(
             worker_num,
             self.setting.clone(),
             self.download_item.clone(),
-            node.range.clone(),
+            range.clone(),
             self.from_worker_tx.clone(),
             engine_to_worker_rx,
-            progress,
+            handle.progress_arc.clone(),
         );
+
+        handle.range = range;
+        handle.assigned_to_worker = true;
+
         self.pending_worker_handshakes.push(worker_num);
+        println!("Spawned worker #{}", worker_num);
         thread::spawn(move || worker.run());
+        Ok(())
     }
 
     /// Checks the temp files' integrity and optionally deletes corrupted files by checking for missing
@@ -1055,10 +1142,11 @@ impl HttpDownloadEngine {
     }
 
     fn is_assemble_eligible(&self) -> bool {
-        todo!()
+        !self.assemble_requested
     }
 
     fn assemble_file(&mut self) -> anyhow::Result<bool> {
+        self.assemble_requested = true;
         let temp_files = list_temp_files_sorted(
             PathBuf::from(&self.setting.base_temp_dir).join(&self.download_item.uid),
         )?;
@@ -1096,6 +1184,7 @@ impl HttpDownloadEngine {
         } else {
             println!("Assemble failed");
         }
+        println!("File assembled successfully");
         // TODO: notify progress
 
         Ok(success)

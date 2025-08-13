@@ -145,7 +145,10 @@ impl HttpDownloadWorker {
                     self.send_to_engine(ToEngineMessage::Failed).await
                 }
                 Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
-                Ok(Status::Resetting) => self.try_download_inner(reuse, true).await,
+                Ok(Status::Resetting) => {
+                    println!("#{} resetting, trying download inner...", self.worker_number);
+                    self.try_download_inner(reuse, true).await
+                },
                 _ => {}
             }
         })
@@ -213,11 +216,13 @@ impl HttpDownloadWorker {
                         Ok(Status::Stopped)
                     }
                     RefreshByteRange(new_range, reuse) => {
+                        println!("Refreshed byte range in outer for worker {}", self.worker_number);
                         self.handle_refresh_byte_range_message(new_range, reuse).await;
+                        self.set_reset_status();
                         Ok(Status::Resetting)
                     }
                     EngineToWorkerMsg::Reset => {
-                        self.handle_reset_message();
+                        self.set_reset_status();
                         Ok(Status::Resetting)
                     }
                     EngineToWorkerMsg::Start => {
@@ -247,10 +252,11 @@ impl HttpDownloadWorker {
                                             return Ok(Status::Stopped);
                                         }
                                         RefreshByteRange(new_range, reuse) => {
+                                            println!("Refreshed byte range in inner for worker {}", self.worker_number);
                                             self.handle_refresh_byte_range_message(new_range, reuse).await;
                                         }
                                         EngineToWorkerMsg::Reset => {
-                                            self.handle_reset_message();
+                                            self.set_reset_status();
                                             return Ok(Status::Resetting);
                                         },
                                         EngineToWorkerMsg::Start => {
@@ -314,7 +320,7 @@ impl HttpDownloadWorker {
         self.send_to_engine(result).await;
     }
 
-    fn handle_reset_message(&mut self) {
+    fn set_reset_status(&mut self) {
         println!("Reset message received from engine. Exiting download...");
         self.progress.lock().unwrap().status = Status::Resetting;
         self.status_downloading = false;

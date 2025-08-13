@@ -15,6 +15,10 @@ impl ByteRange {
         ByteRange { start, end }
     }
 
+    pub fn empty() -> Self {
+        ByteRange { start: 0, end: 0 }
+    }
+
     pub fn is_in_range_of(&self, other: &ByteRange) -> bool {
         self.start >= other.end && self.start <= other.end
     }

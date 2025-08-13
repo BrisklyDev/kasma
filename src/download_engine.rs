@@ -1,6 +1,7 @@
 use crate::download_engine::http::FileInfo;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use strum_macros::{Display, EnumString};
 use uuid::Uuid;
 
 pub mod http;
@@ -9,8 +10,10 @@ pub mod utils;
 mod errors;
 mod macros;
 
+#[derive(PartialEq, Copy, Clone, Display, EnumString)]
 pub enum EngineState {
     Complete,
+    WorkersComplete,
     Initial,
     Running,
 }
