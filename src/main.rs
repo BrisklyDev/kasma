@@ -28,7 +28,7 @@ fn main() {
     let setting = DownloadSetting::builder()
         .base_save_dir("C:\\Users\\RyeWell\\Desktop\\kasma-out")
         .base_temp_dir("C:\\Users\\RyeWell\\Desktop\\kasma-out\\temp")
-        .total_connections(1)
+        .total_connections(8)
         .reset_timeout_millis(6000)
         .progress_polling_milliseconds(200)
         .build();
