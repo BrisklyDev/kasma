@@ -222,7 +222,7 @@ impl HttpDownloadEngine {
                 Some(msg) = self.from_worker_rx.recv() => self.handle_worker_msg(msg).await?,
                 // _ = worker_reuse_ticker.tick() => self.run_worker_reuse_ticker()?,
                 _ = worker_spawner_ticker.tick() => self.run_worker_spawner_ticker().await?,
-                // _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
+                _ = worker_reset_ticker.tick() => self.run_worker_reset_ticker().await?,
                 _ = download_progress_ticker.tick() => self.handle_progress_updates()?,
             }
         }
@@ -371,10 +371,14 @@ impl HttpDownloadEngine {
         let all_complete = self
             .worker_progresses()?
             .iter()
-            .all(|x| x.status == Status::RangeComplete);
+            .all(|x| {
+                println!("Status for checktemp {:?}", x.status);
+                x.status == Status::RangeComplete
+            });
         if !all_complete {
             return Ok(false);
         }
+        self.validate_temp_files_integrity(true, true, true)?;
         let missing_ranges = self.find_missing_byte_ranges()?;
         for range in &missing_ranges {
             println!("Missing range:: {}", range);
@@ -382,7 +386,6 @@ impl HttpDownloadEngine {
         if missing_ranges.is_empty() && self.state == EngineState::WorkersComplete {
             return Ok(true);
         }
-        self.validate_temp_files_integrity(true, true, true)?;
         Ok(missing_ranges.is_empty())
     }
 
@@ -409,6 +412,7 @@ impl HttpDownloadEngine {
                     < now_millis()
         });
         for worker in connections_to_reset {
+            println!("Sent reset to worker {}", worker.0);
             worker.1.to_worker_tx.send(EngineToWorkerMsg::Reset).await?;
         }
         Ok(())

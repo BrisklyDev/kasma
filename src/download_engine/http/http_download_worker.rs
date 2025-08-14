@@ -1,3 +1,4 @@
+use crate::download_engine::errors::DownloadError;
 use crate::download_engine::http::byte_range::ByteRange;
 use crate::download_engine::http::http_download_engine::MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN;
 use crate::download_engine::http::http_download_worker::Status::RangeComplete;
@@ -24,7 +25,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::vec;
 use tokio::sync::mpsc::{Receiver, Sender};
-use crate::download_engine::errors::DownloadError;
 
 const SPEED_CHECK_WINDOW_MILLIS: u32 = 1100;
 const MIN_FLUSH: u64 = 64 * 1024; // 64 KB
@@ -104,7 +104,7 @@ impl HttpDownloadWorker {
     async fn run_async(&mut self) {
         let handshake = ToEngineMessage::HandshakeResponse { reuse: false };
         self.send_to_engine(handshake).await;
-        self.try_download(false, false).await;
+        let _ = self.start_download(false, false).await;
         self.run_event_loop().await;
     }
 
@@ -112,11 +112,15 @@ impl HttpDownloadWorker {
         loop {
             match self.from_engine_rx.recv().await {
                 Some(EngineToWorkerMsg::Start) => {
-                    self.try_download(false, false).await;
+                    let _ = self.start_download(false, false).await;
                 }
                 Some(EngineToWorkerMsg::Stop) => {
-                    println!("Cancel received");
+                    println!("#{} Cancel received", self.worker_number);
                     self.progress.lock().unwrap().status = Status::Stopped;
+                }
+                Some(EngineToWorkerMsg::Reset) => {
+                    println!("#{} Reset received in event loop", self.worker_number);
+                    let _ = self.start_download(false, true).await;
                 }
                 None => {
                     // happens when the sender is dropped. Can be used to break and cleanup
@@ -126,39 +130,9 @@ impl HttpDownloadWorker {
         }
     }
 
-    pub async fn try_download(&mut self, reuse: bool, reset: bool) {
-        self.try_download_inner(reuse, reset).await;
-    }
-
-    /// Tries downloading the file and sends the proper messages to the engine.
-    fn try_download_inner<'a>(
-        &'a mut self,
-        reuse: bool,
-        reset: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
-        Box::pin(async move {
-            match self.start_download(reuse, reset).await {
-                Ok(Status::RangeComplete) => {
-                    self.send_to_engine(ToEngineMessage::Complete(self.byte_range.clone()))
-                        .await
-                }
-                Err(e) => {
-                    println!("Error in try download inner {}", e);
-                    self.send_to_engine(ToEngineMessage::Failed).await
-                }
-                Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
-                Ok(Status::Resetting) => {
-                    println!("#{} resetting, trying download inner...", self.worker_number);
-                    self.try_download_inner(reuse, true).await
-                },
-                _ => {}
-            }
-        })
-    }
-
     /// Starts the download process.
     ///
-    /// The worker is initialized with proper values and then a `tokio::select!` runs with two branches:
+    /// The worker is initialized with proper values, and then a `tokio::select!` runs with two branches:
     ///
     /// - `self.from_engine_rx.recv()`: listens to messages coming from the engine.
     /// - `response = client.send(req)`: sends the HTTP request via hyper.
@@ -183,11 +157,11 @@ impl HttpDownloadWorker {
             self.worker_number, self.byte_range
         );
         if self.progress.lock().unwrap().status == Status::Starting
-            || self.is_start_not_allowed(reuse, false)
+            || self.is_start_not_allowed(reuse, reset)
         {
+            println!("#{} start not allowed", self.worker_number);
             return Err(DownloadError::InvalidCommand);
         }
-        let req = self.build_request(reuse)?;
         if let Err(e) = self.init().await {
             println!("Failed to initialize download: {}", e);
             self.progress.lock().unwrap().status = Status::Failed;
@@ -206,6 +180,7 @@ impl HttpDownloadWorker {
             return Ok(Status::Stopped);
         }
 
+        let req = self.build_request(reuse)?;
         tokio::select! {
             biased;
 
@@ -283,6 +258,7 @@ impl HttpDownloadWorker {
                                             return Err(DownloadError::Other(e.to_string()));
                                         }
                                         None => {
+                                            println!("#{} inside None", self.worker_number);
                                             return self.handle_download_complete();
                                         }
                                     }
@@ -720,8 +696,10 @@ impl HttpDownloadWorker {
 
         if request_range.start == self.byte_range.start {
             self.prev_buffer_end_byte = 0;
+            println!("Request range was == with start");
         } else {
             self.prev_buffer_end_byte = request_range.start - self.byte_range.start;
+            println!("wasn't, prev: {}", self.prev_buffer_end_byte);
         }
 
         Ok(req)
@@ -731,6 +709,7 @@ impl HttpDownloadWorker {
         {
             let mut progress = self.progress.lock().unwrap();
             progress.worker_download_progress = 0f64;
+            progress.last_response_time = now_millis();
         }
         self.total_request_bytes_received = 0;
         self.prev_buffer_end_byte = 0;
@@ -810,7 +789,7 @@ async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32
 /// Starting: The download is starting
 /// Connecting: Connecting to server (no data has been received yet)
 /// Failed: Download has failed
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Status {
     Initial,
     Stopped,
