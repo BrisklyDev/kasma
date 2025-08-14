@@ -25,6 +25,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::{fs, thread, u64};
@@ -382,7 +383,7 @@ impl HttpDownloadEngine {
             return Ok(true);
         }
         self.validate_temp_files_integrity(true, true, true)?;
-        Ok(false)
+        Ok(missing_ranges.is_empty())
     }
 
     fn calculate_total_speed(&self) -> anyhow::Result<u64> {
@@ -749,6 +750,11 @@ impl HttpDownloadEngine {
         } else {
             self.spawn_worker(new_worker_number, right_child_rc).await?;
         }
+        println!(
+            "Tree after spawn for worker {}\n{}",
+            worker_num,
+            self.byte_range_tree.as_ref().unwrap()
+        );
 
         Ok(())
     }
@@ -759,7 +765,10 @@ impl HttpDownloadEngine {
         requested_range: ByteRange,
         reuse: bool,
     ) -> anyhow::Result<()> {
-        println!("HandleRefreshByteRangeRefused");
+        println!(
+            "HandleRefreshByteRangeRefused coming from worker {}",
+            worker_number
+        );
         if self.byte_range_tree.is_none() {
             return Ok(());
         }
@@ -840,34 +849,43 @@ impl HttpDownloadEngine {
             "Handling refresh success from worker {} with requested range {}",
             worker_num, requested_range
         );
-        let tree = self.byte_range_tree.as_ref().unwrap();
-        print!("{}", tree);
-        let node = tree.search_node(&requested_range);
+        let node = {
+            let tree = self.byte_range_tree.as_ref().unwrap();
+            print!("{}", tree);
+            tree.search_node(&requested_range)
+        };
         if node.is_none() {
             engine_warn!("handle_refresh_byte_range_success:: Failed to find segment node")
         }
-        let parent_weak = node.unwrap().borrow().parent.clone();
-        let parent_rc = parent_weak.upgrade().unwrap();
-        let mut parent = parent_rc.borrow_mut();
-        parent.status = ByteRangeStatus::Outdated;
 
-        let worker_node = parent.right_child.as_ref().unwrap().clone();
-        let mut worker_node_ref = parent.right_child.as_ref().unwrap().borrow_mut();
-        if reuse {
-            self.send_start_command_reuse_worker(
-                worker_node_ref.worker_number,
-                worker_node_ref.range.clone(),
-            )
-            .await?;
-        } else {
-            let node_worker_num = worker_node_ref.worker_number;
-            drop(worker_node_ref);
-            self.spawn_worker(node_worker_num, worker_node).await;
-            self.pending_worker_handshakes.push(node_worker_num);
-            worker_node_ref = parent.right_child.as_ref().unwrap().borrow_mut();
+        {
+            let parent_weak = node.unwrap().borrow().parent.clone();
+            let parent_rc = parent_weak.upgrade().unwrap();
+            let mut parent = parent_rc.borrow_mut();
+            parent.status = ByteRangeStatus::Outdated;
+            let worker_node = parent.right_child.as_ref().unwrap().clone();
+            let mut worker_node_ref = parent.right_child.as_ref().unwrap().borrow_mut();
+            if reuse {
+                self.send_start_command_reuse_worker(
+                    worker_node_ref.worker_number,
+                    worker_node_ref.range.clone(),
+                )
+                .await?;
+            } else {
+                let node_worker_num = worker_node_ref.worker_number;
+                drop(worker_node_ref);
+                self.spawn_worker(node_worker_num, worker_node).await?;
+                self.pending_worker_handshakes.push(node_worker_num);
+                worker_node_ref = parent.right_child.as_ref().unwrap().borrow_mut();
+            }
+            parent.left_child.as_ref().unwrap().borrow_mut().status = ByteRangeStatus::Downloading;
+            worker_node_ref.status = ByteRangeStatus::Downloading;
         }
-        parent.left_child.as_ref().unwrap().borrow_mut().status = ByteRangeStatus::Downloading;
-        worker_node_ref.status = ByteRangeStatus::Downloading;
+        println!(
+            "Tree after spawn for worker {}\n{}",
+            worker_num,
+            self.byte_range_tree.as_ref().unwrap()
+        );
         Ok(())
     }
 

@@ -10,12 +10,14 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
+use crate::download_engine::http::http_client::HttpClient;
 
 pub mod byte_range;
 pub mod http_download_engine;
 pub mod http_download_worker;
 pub mod message;
 pub mod progress;
+mod http_client;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -57,88 +59,6 @@ impl fmt::Display for ClientError {
 }
 
 impl StdError for ClientError {}
-
-pub struct HttpClient {
-    inner: Client<HttpsConnector<HttpConnector>, Empty<Bytes>>,
-}
-
-impl HttpClient {
-    pub fn new() -> Self {
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .unwrap()
-            .https_or_http()
-            .enable_http1()
-            .build();
-
-        let client: Client<HttpsConnector<HttpConnector>, Empty<Bytes>> =
-            Client::builder(TokioExecutor::new())
-                .pool_timer(TokioTimer::new())
-                .pool_idle_timeout(Duration::from_secs(30))
-                .build(https);
-
-        HttpClient { inner: client }
-    }
-
-    /// Sends request with redirect support. Does not support body
-    pub async fn send(
-        &self,
-        request: Request<Empty<Bytes>>,
-    ) -> Result<Response<Incoming>, ClientError> {
-        let mut current_url = request.uri().clone();
-        let mut redirect_count = 0;
-        let current_request = request;
-        const MAX_REDIRECTS: u8 = 10;
-        loop {
-            let mut req_builder = Request::builder()
-                .method(current_request.method())
-                .uri(current_url.clone())
-                .version(current_request.version());
-            for header in current_request.headers() {
-                req_builder = req_builder.header(header.0, header.1);
-            }
-            let req = req_builder.body(Empty::<Bytes>::new())?;
-            let resp = self.inner.request(req).await?;
-            match resp.status() {
-                status if status.is_success() => {
-                    return Ok(resp);
-                }
-                status if status.is_redirection() => {
-                    redirect_count += 1;
-                    if redirect_count > MAX_REDIRECTS {
-                        return Err("Too many redirects".into());
-                    }
-
-                    let location = resp
-                        .headers()
-                        .get("location")
-                        .ok_or("Redirect response missing Location header")?
-                        .to_str()
-                        .map_err(|_| "Invalid redirect location")?;
-
-                    println!("Following redirect to: {}", location);
-                    // Handle both absolute and relative URLs
-                    current_url = if location.starts_with("http") {
-                        location
-                            .parse()
-                            .map_err(|e| format!("Invalid URI: {}", e))?
-                    } else {
-                        let mut parts = current_url.into_parts();
-                        parts.path_and_query = Some(
-                            location
-                                .parse()
-                                .map_err(|e| format!("Invalid path: {}", e))?,
-                        );
-                        Uri::from_parts(parts).map_err(|e| format!("Invalid URI parts: {}", e))?
-                    };
-                }
-                status => {
-                    return Err(format!("HTTP error: {}", status).into());
-                }
-            }
-        }
-    }
-}
 
 pub struct FileInfo {
     pub url: String,

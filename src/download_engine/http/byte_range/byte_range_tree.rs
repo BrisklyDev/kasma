@@ -285,11 +285,15 @@ impl ByteRangeTree {
         &mut self,
         node: &NodeRef,
         set_worker_num: bool,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let node_range = node.borrow().range.clone();
         let split_byte = (node_range.end - node_range.start) / 2;
         if split_byte == 0 {
             return Err("Split byte is zero".to_string());
+        }
+        if node.borrow().status == ByteRangeStatus::Complete {
+            println!("Node status is Complete. skipping split for this node...");
+            return Ok(false);
         }
 
         let (range_left, range_right) = {
@@ -367,7 +371,7 @@ impl ByteRangeTree {
             .insert(index, node_ref.left_child.as_ref().unwrap().clone());
         self.lowest_level_nodes
             .insert(index + 1, node_ref.right_child.as_ref().unwrap().clone());
-        Ok(())
+        Ok(true)
     }
 
     pub fn split(&mut self) -> Result<(), String> {
@@ -383,7 +387,10 @@ impl ByteRangeTree {
             }
         };
 
-        self.split_byte_range_node(&node, true)?;
+        let success = self.split_byte_range_node(&node, true)?;
+        if !success {
+            return Err("Node was not split!".to_string());
+        }
 
         if Rc::ptr_eq(&node, &self.root) {
             return Ok(());
@@ -399,7 +406,12 @@ impl ByteRangeTree {
                 }
             }
 
-            self.split_byte_range_node(&curr, true)?;
+            let success = self.split_byte_range_node(&curr, true)?;
+            if !success {
+                println!("Node was not split!");
+                current_neighbor = node.borrow().right_neighbor.clone();
+                continue;
+            }
 
             let left_child_after_split = curr.borrow().left_child.clone();
 

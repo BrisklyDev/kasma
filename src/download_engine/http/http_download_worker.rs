@@ -36,6 +36,7 @@ const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 /// receive messages respectively.
 pub struct HttpDownloadWorker {
     pub worker_number: u8,
+    client: HttpClient,
     setting: DownloadSetting,
     status_downloading: bool,
     download_info: DownloadItem,
@@ -67,6 +68,7 @@ impl HttpDownloadWorker {
     ) -> Self {
         HttpDownloadWorker {
             download_info: info,
+            client: HttpClient::new(),
             status_downloading: false,
             worker_number,
             byte_range,
@@ -174,7 +176,6 @@ impl HttpDownloadWorker {
     /// The `reuse` parameter indicates whether this start is for connection reuse:
     /// when a worker finishes downloading and is assigned a new byte range.
     ///
-    /// TODO: Implement HTTP client reuse.
     async fn start_download(&mut self, reuse: bool, reset: bool) -> Result<Status, DownloadError> {
         //TODO: pass reset to method
         println!(
@@ -186,7 +187,6 @@ impl HttpDownloadWorker {
         {
             return Err(DownloadError::InvalidCommand);
         }
-        let client = HttpClient::new();
         let req = self.build_request(reuse)?;
         if let Err(e) = self.init().await {
             println!("Failed to initialize download: {}", e);
@@ -236,7 +236,7 @@ impl HttpDownloadWorker {
                 }
             },
 
-            response = client.send(req) => {
+            response = self.client.send(req) => {
                 match response {
                     Ok(resp) => {
                         let mut body = resp.into_body();
