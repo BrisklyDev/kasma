@@ -267,6 +267,7 @@ impl HttpDownloadWorker {
                         }
                     }
                     Err(e) => {
+                        println!("Download error {}",e );
                         Err(DownloadError::Transport(e.to_string()))
                     }
                 }

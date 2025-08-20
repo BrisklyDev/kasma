@@ -368,13 +368,10 @@ impl HttpDownloadEngine {
     }
 
     fn check_temp_write_completion(&self) -> anyhow::Result<bool> {
-        let all_complete = self
-            .worker_progresses()?
-            .iter()
-            .all(|x| {
-                println!("Status for checktemp {:?}", x.status);
-                x.status == Status::RangeComplete
-            });
+        let all_complete = self.worker_progresses()?.iter().all(|x| {
+            println!("Status for checktemp {:?}", x.status);
+            x.status == Status::RangeComplete
+        });
         if !all_complete {
             return Ok(false);
         }
@@ -406,7 +403,7 @@ impl HttpDownloadEngine {
             w.1.assigned_to_worker
                 && !matches!(
                     &progress.status,
-                    Status::Stopped | Status::Starting | Status::Complete
+                    Status::Stopped | Status::Starting | Status::Complete | Status::RangeComplete
                 )
                 && progress.last_response_time + (self.setting.reset_timeout_millis as u128)
                     < now_millis()
@@ -565,7 +562,7 @@ impl HttpDownloadEngine {
             .any(|n| n.borrow().status == ByteRangeStatus::RefreshRequested);
 
         !pending_range_refresh_exists
-            && self.progress.estimated_remaining_sec > 5
+            && self.progress.estimated_remaining_sec > 3
             && self.pending_worker_handshakes.is_empty()
             && self.progress.workers_progress.len() < (self.setting.total_connections as usize)
             && self.spawned_workers < self.setting.total_connections

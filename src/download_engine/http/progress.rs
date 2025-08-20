@@ -1,4 +1,4 @@
-use crate::download_engine::http::http_download_worker::Status;
+use crate::download_engine::{http::http_download_worker::Status, utils::now_millis};
 
 pub struct WorkerProgress {
     pub status: Status,
@@ -17,7 +17,7 @@ impl WorkerProgress {
             worker_download_progress: 0.0,
             total_download_progress: 0.0,
             total_bytes_received: 0,
-            last_response_time: 0,
+            last_response_time: now_millis(),
         }
     }
 }
