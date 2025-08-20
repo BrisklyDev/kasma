@@ -1,5 +1,5 @@
 use crate::download_engine::errors::DownloadError;
-use crate::download_engine::http::byte_range::ByteRange;
+use crate::download_engine::http::byte_range::{self, ByteRange};
 use crate::download_engine::http::http_download_engine::MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN;
 use crate::download_engine::http::http_download_worker::Status::RangeComplete;
 use crate::download_engine::http::message::EngineToWorkerMsg::RefreshByteRange;
@@ -19,6 +19,7 @@ use hyper::{Request, http};
 use std::fs::{File, create_dir_all, remove_file};
 use std::io::Read;
 use std::io::Write;
+use std::os::linux::raw::stat;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -35,7 +36,7 @@ const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 /// Workers communicate with the engine via the `to_engine_tx` and `from_engine_rx` to send and
 /// receive messages respectively.
 pub struct HttpDownloadWorker {
-    pub worker_number: u8,
+    worker_number: u8,
     client: HttpClient,
     setting: DownloadSetting,
     status_downloading: bool,
@@ -303,7 +304,7 @@ impl HttpDownloadWorker {
         self.status_downloading = false;
     }
 
-    fn is_start_not_allowed(&self, reuse: bool, conn_reset: bool) -> bool {
+    fn is_start_not_allowed(&self, reuse: bool, reset: bool) -> bool {
         if self.byte_range.start >= self.byte_range.end
             || self.byte_range.start > self.download_info.file_size
             || self.byte_range.end > self.download_info.file_size
@@ -314,14 +315,30 @@ impl HttpDownloadWorker {
             );
             return true;
         }
-
+        let status = &self.progress.lock().unwrap().status;
         if reuse {
             return false;
         }
+
+        if reset {
+            if let Status::RangeComplete = status {
+                return true;
+            }
+            let files = self.temp_files_sorted(true);
+            if let Some(last_file) = files.last() {
+                if last_file.end_byte == self.byte_range.end
+                    || (self.byte_range.end == self.download_info.file_size
+                        && last_file.end_byte == self.download_info.file_size - 1)
+                {
+                    return true;
+                }
+            }
+        }
+
         matches!(
-            self.progress.lock().unwrap().status,
+            status,
             Status::Downloading | Status::Connecting | Status::Starting
-        ) && !conn_reset
+        ) && !reset
     }
 
     async fn init(&mut self) -> anyhow::Result<()> {
