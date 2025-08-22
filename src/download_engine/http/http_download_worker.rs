@@ -19,7 +19,6 @@ use hyper::{Request, http};
 use std::fs::{File, create_dir_all, remove_file};
 use std::io::Read;
 use std::io::Write;
-use std::os::linux::raw::stat;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -118,6 +117,14 @@ impl HttpDownloadWorker {
                 Some(EngineToWorkerMsg::Stop) => {
                     println!("#{} Cancel received", self.worker_number);
                     self.progress.lock().unwrap().status = Status::Stopped;
+                }
+                Some(EngineToWorkerMsg::RefreshByteRange(range, reuse)) => {
+                    self.handle_refresh_byte_range_message(range.clone(), reuse)
+                        .await;
+                    println!(
+                        "#{} received refresh byte range in event loop with range {}",
+                        self.worker_number, range
+                    );
                 }
                 Some(EngineToWorkerMsg::Reset) => {
                     println!("#{} Reset received in event loop", self.worker_number);
@@ -394,6 +401,12 @@ impl HttpDownloadWorker {
     fn refresh_byte_range(&mut self, new_range: ByteRange, reuse_worker: bool) -> ToEngineMessage {
         let prev_end_byte = self.byte_range.end;
         if self.progress.lock().unwrap().status == RangeComplete {
+            return ToEngineMessage::ByteRangeRefreshRefused {
+                requested_range: new_range,
+                reuse: reuse_worker,
+            };
+        }
+        if self.byte_range.end <= self.byte_range.start + self.total_request_bytes_received {
             return ToEngineMessage::ByteRangeRefreshRefused {
                 requested_range: new_range,
                 reuse: reuse_worker,

@@ -725,7 +725,7 @@ impl HttpDownloadEngine {
                 .find(|x| x.borrow().worker_number == worker_num);
 
             if let Some(node) = related_node {
-                node.borrow_mut().status = ByteRangeStatus::RefreshRequested;
+                node.borrow_mut().status = ByteRangeStatus::Downloading;
             }
         }
     }
@@ -861,7 +861,7 @@ impl HttpDownloadEngine {
             self.reuse_worker_queue.push_back(worker_number);
             println!("Added connection {} to connection queue", worker_number);
         } else {
-            // TODO: can we handle this?
+            self.spawned_workers = self.setting.total_connections;
         }
 
         let left_child_range = parent.left_child.as_ref().unwrap().borrow().range.clone();
@@ -982,11 +982,12 @@ impl HttpDownloadEngine {
     }
 
     async fn send_start_command_reuse_worker(
-        &self,
+        &mut self,
         worker_num: u8,
         range: ByteRange,
     ) -> anyhow::Result<()> {
-        if let Some(worker) = self.workers.get(&worker_num) {
+        if let Some(worker) = self.workers.get_mut(&worker_num) {
+            worker.range = range.clone();
             worker
                 .to_worker_tx
                 .send(EngineToWorkerMsg::StartReuseWorker(range))
