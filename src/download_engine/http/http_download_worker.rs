@@ -113,7 +113,7 @@ impl HttpDownloadWorker {
         loop {
             match self.from_engine_rx.recv().await {
                 Some(EngineToWorkerMsg::Start) => {
-                    let _ = self.start_download(false, false).await;
+                    self.start_download(false, false).await;
                 }
                 Some(EngineToWorkerMsg::Stop) => {
                     println!("#{} Cancel received", self.worker_number);
@@ -121,13 +121,33 @@ impl HttpDownloadWorker {
                 }
                 Some(EngineToWorkerMsg::Reset) => {
                     println!("#{} Reset received in event loop", self.worker_number);
-                    let _ = self.start_download(false, true).await;
+                    self.start_download(false, true).await;
+                }
+                Some(EngineToWorkerMsg::StartReuseWorker(range)) => {
+                    println!(
+                        "#{} StartReuseWorker received in event loop",
+                        self.worker_number
+                    );
+                    self.byte_range = range;
+                    self.start_download(true, false).await;
                 }
                 None => {
                     // happens when the sender is dropped. Can be used to break and cleanup
                 }
                 _ => {}
             }
+        }
+    }
+
+    async fn start_download(&mut self, reuse: bool, reset: bool) {
+        match self.start_download_inner(reuse, reset).await {
+            Ok(Status::RangeComplete) => {
+                self.send_to_engine(ToEngineMessage::Complete(self.byte_range.clone()))
+                    .await
+            }
+            Err(_) => self.send_to_engine(ToEngineMessage::Failed).await,
+            Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
+            _ => {}
         }
     }
 
@@ -151,7 +171,11 @@ impl HttpDownloadWorker {
     /// The `reuse` parameter indicates whether this start is for connection reuse:
     /// when a worker finishes downloading and is assigned a new byte range.
     ///
-    async fn start_download(&mut self, reuse: bool, reset: bool) -> Result<Status, DownloadError> {
+    async fn start_download_inner(
+        &mut self,
+        reuse: bool,
+        reset: bool,
+    ) -> Result<Status, DownloadError> {
         //TODO: pass reset to method
         println!(
             "#{} Starting download with range {}",
@@ -205,8 +229,12 @@ impl HttpDownloadWorker {
                         /// TODO fix
                         Ok(Status::Resetting)
                     },
-                    EngineToWorkerMsg::StartReuseConnection(_) => {
+                    EngineToWorkerMsg::StartReuseWorker(_) => {
                         /// TODO fix
+                    println!(
+                        "#{} StartReuseWorker received in outer",
+                        self.worker_number
+                    );
                         Ok(Status::Resetting)
                     }
                 }
@@ -239,7 +267,7 @@ impl HttpDownloadWorker {
                                             /// TODO fix
                                             return Ok(Status::Resetting);
                                         },
-                                        EngineToWorkerMsg::StartReuseConnection(_) => {
+                                        EngineToWorkerMsg::StartReuseWorker(range) => {
                                             /// TODO fix
                                             return Ok(Status::Resetting);
                                         }
@@ -363,16 +391,12 @@ impl HttpDownloadWorker {
         }
     }
 
-    fn refresh_byte_range(
-        &mut self,
-        new_range: ByteRange,
-        reuse_connection: bool,
-    ) -> ToEngineMessage {
+    fn refresh_byte_range(&mut self, new_range: ByteRange, reuse_worker: bool) -> ToEngineMessage {
         let prev_end_byte = self.byte_range.end;
         if self.progress.lock().unwrap().status == RangeComplete {
             return ToEngineMessage::ByteRangeRefreshRefused {
                 requested_range: new_range,
-                reuse: reuse_connection,
+                reuse: reuse_worker,
             };
         }
         if self.byte_range.start + self.total_request_bytes_received >= new_range.end {
@@ -396,19 +420,19 @@ impl HttpDownloadWorker {
                     requested_range: new_range.clone(),
                     new_valid_range: ByteRange::new(self.byte_range.end + 1, prev_end_byte),
                     refreshed_range: self.byte_range.clone(),
-                    reuse: reuse_connection,
+                    reuse: reuse_worker,
                 }
             } else {
                 ToEngineMessage::ByteRangeRefreshRefused {
                     requested_range: new_range,
-                    reuse: reuse_connection,
+                    reuse: reuse_worker,
                 }
             };
         }
         if new_range.start >= new_range.end || new_range.start + 1 >= new_range.end {
             return ToEngineMessage::ByteRangeRefreshRefused {
                 requested_range: new_range,
-                reuse: reuse_connection,
+                reuse: reuse_worker,
             };
         }
 
@@ -419,7 +443,7 @@ impl HttpDownloadWorker {
         );
         ToEngineMessage::ByteRangeRefreshSuccess {
             requested_range: self.byte_range.clone(),
-            reuse: reuse_connection,
+            reuse: reuse_worker,
         }
     }
 

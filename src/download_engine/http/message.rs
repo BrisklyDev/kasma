@@ -15,8 +15,9 @@ pub enum EngineToWorkerMsg {
     Start,
     Stop,
     Reset,
+    // args: new byte range, reuse
     RefreshByteRange(ByteRange, bool),
-    StartReuseConnection(ByteRange),
+    StartReuseWorker(ByteRange),
 }
 
 pub enum EngineToMainMsg {
