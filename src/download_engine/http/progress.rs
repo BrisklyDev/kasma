@@ -22,6 +22,7 @@ impl WorkerProgress {
     }
 }
 
+
 pub struct DownloadProgress {
     pub speed_bytes_per_sec: u64,
     pub speed_str: String,

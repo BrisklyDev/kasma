@@ -15,6 +15,7 @@ pub struct DownloadSetting {
     pub total_connections: u8,
     pub base_save_dir: PathBuf,
     pub base_temp_dir: PathBuf,
+    pub logger_enabled: bool,
 }
 
 impl DownloadSetting {
@@ -31,6 +32,7 @@ pub struct DownloadSettingBuilder {
     base_save_dir: Option<PathBuf>,
     base_temp_dir: Option<PathBuf>,
     reset_timeout_millis: Option<u64>,
+    logger: Option<bool>,
 }
 
 impl DownloadSettingBuilder {
@@ -59,6 +61,11 @@ impl DownloadSettingBuilder {
         self
     }
 
+    pub fn with_logger(mut self) -> Self {
+        self.logger = Some(true);
+        self
+    }
+
     pub fn reset_timeout_millis(mut self, ms: u64) -> Self {
         self.reset_timeout_millis = Some(ms);
         self
@@ -72,6 +79,7 @@ impl DownloadSettingBuilder {
             base_save_dir: self.base_save_dir.unwrap_or(PathBuf::from("./downloads")),
             base_temp_dir: self.base_temp_dir.unwrap_or(PathBuf::from("./temp")),
             reset_timeout_millis: self.reset_timeout_millis.unwrap_or(60_000),
+            logger_enabled: self.logger.unwrap_or(false),
         }
     }
 }

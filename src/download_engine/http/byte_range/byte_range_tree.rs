@@ -1,4 +1,5 @@
 use crate::download_engine::http::byte_range::ByteRange;
+use crate::engine_log;
 use std::cell::RefCell;
 use std::cmp::PartialEq;
 use std::fmt::{Display, Formatter};
@@ -292,7 +293,6 @@ impl ByteRangeTree {
             return Err("Split byte is zero".to_string());
         }
         if node.borrow().status == ByteRangeStatus::Complete {
-            println!("Node status is Complete. skipping split for this node...");
             return Ok(false);
         }
 
@@ -346,13 +346,6 @@ impl ByteRangeTree {
         let node_idx = {
             let range = node_ref.range.clone();
             drop(node_ref);
-            println!("Trying to find node");
-            println!("Range: {}", range);
-            println!("Tree L:\n {}", self);
-            println!("Lowest lvl:");
-            for refff in &self.lowest_level_nodes {
-                println!("{}", refff.borrow().range);
-            }
             let idx = self
                 .lowest_level_nodes
                 .iter()
@@ -408,7 +401,6 @@ impl ByteRangeTree {
 
             let success = self.split_byte_range_node(&curr, true)?;
             if !success {
-                println!("Node was not split!");
                 current_neighbor = node.borrow().right_neighbor.clone();
                 continue;
             }
@@ -613,6 +605,7 @@ impl ByteRangeNode {
 #[derive(PartialEq, Copy, Clone, Display, EnumString)]
 pub enum ByteRangeStatus {
     ToDownload,
+    Stopped,
     RefreshRequested,
     Downloading,
     ToDownloadInQueue,

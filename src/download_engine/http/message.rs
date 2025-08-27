@@ -10,7 +10,7 @@ pub struct ButtonAvailability {
     pub resume_available: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EngineToWorkerMsg {
     Start,
     Stop,
@@ -22,7 +22,8 @@ pub enum EngineToWorkerMsg {
 
 pub enum EngineToMainMsg {
     Uid(String),
-    Progress(DownloadProgress),
+    Progress(f64),
+    Complete,
 }
 
 #[derive(Debug)]
@@ -52,6 +53,7 @@ pub enum ToEngineMessage {
         new_valid_range: ByteRange,
         reuse: bool,
     },
+    Log(String),
     Stopped,
     Failed,
 }

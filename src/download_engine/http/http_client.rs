@@ -67,7 +67,6 @@ impl HttpClient {
                         .to_str()
                         .map_err(|_| "Invalid redirect location")?;
 
-                    println!("Following redirect to: {}", location);
                     // Handle both absolute and relative URLs
                     current_url = if location.starts_with("http") {
                         location
