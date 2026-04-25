@@ -392,6 +392,19 @@ impl HttpDownloadWorker {
             }
         }
 
+        // On a plain Start (pause/resume), skip if the assigned range is already fully on disk.
+        // Completed workers sit in the reuse queue with status=Stopped (pause reset it from
+        // RangeComplete), so we must check the temp files rather than relying on status alone.
+        if !reset {
+            let files = self.temp_files_sorted(true);
+            if let Some(last_file) = files.last() {
+                if last_file.end_byte >= self.byte_range.end {
+                    worker_log!(self, "Range already fully on disk, skipping start");
+                    return true;
+                }
+            }
+        }
+
         matches!(
             status,
             Status::Downloading | Status::Connecting | Status::Starting
@@ -777,13 +790,13 @@ impl HttpDownloadWorker {
         let total_req_received_bytes = self.total_written_bytes(true);
         let mut progress = self.progress.lock().unwrap();
         progress.worker_download_progress =
-            (total_req_received_bytes / self.byte_range.len()) as f64;
+            total_req_received_bytes as f64 / self.byte_range.len() as f64;
 
         self.total_bytes_received = total_existing_len;
         self.total_request_bytes_received = total_req_received_bytes;
         progress.total_bytes_received = self.total_bytes_received;
         progress.total_download_progress =
-            (self.total_bytes_received / self.download_info.file_size) as f64;
+            self.total_bytes_received as f64 / self.download_info.file_size as f64;
 
         if request_range.start == self.byte_range.start {
             self.prev_buffer_end_byte = 0;

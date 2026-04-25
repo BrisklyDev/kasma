@@ -404,20 +404,13 @@ impl HttpDownloadEngine {
     }
 
     fn check_temp_write_completion(&mut self) -> anyhow::Result<bool> {
-        {
-            let progresses = self.worker_progresses()?;
-            let all_complete = progresses.iter().all(|x| x.status == Status::RangeComplete);
-            if !all_complete {
-                return Ok(false);
-            }
+        if self.state != EngineState::WorkersComplete {
+            return Ok(false);
         }
-        self.validate_temp_files_integrity(true, true, true)?;
+        self.validate_temp_files_integrity(false, true, true)?;
         let missing_ranges = self.find_missing_byte_ranges()?;
         for range in &missing_ranges {
             engine_log!(self, "Missing range:: {}", range);
-        }
-        if missing_ranges.is_empty() && self.state == EngineState::WorkersComplete {
-            return Ok(true);
         }
         Ok(missing_ranges.is_empty())
     }

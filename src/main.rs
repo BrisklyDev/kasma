@@ -10,6 +10,7 @@ use crate::download_engine::{
     DownloadInfo, RunnableTask, http::http_download_engine::HttpDownloadEngine,
 };
 use crossterm::event::{self, Event, KeyCode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::{result, thread};
@@ -19,12 +20,12 @@ pub mod download_engine;
 
 fn main() {
     let info = DownloadInfo::from_url(
-        "https://dl5.dlhas.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi".to_string()
+        "https://download-installer.cdn.mozilla.net/pub/firefox/releases/150.0/linux-x86_64/en-US/firefox-150.0.tar.xz".to_string()
     );
 
     let setting = DownloadSetting::builder()
-        .base_save_dir("C:\\Users\\RyeWell\\Desktop\\kasma-out")
-        .base_temp_dir("C:\\Users\\RyeWell\\Desktop\\kasma-out\\temp")
+        .base_save_dir("/home/ryewell/Personal/kasmaout")
+        .base_temp_dir("/home/ryewell/Personal/kasmaout/temp")
         .total_connections(8)
         .reset_timeout_millis(6000)
         .progress_polling_milliseconds(200)
@@ -32,6 +33,8 @@ fn main() {
         .build();
 
     let mut handle = spawn_http_engine(setting, info);
+
+    enable_raw_mode().unwrap();
 
     let pb = ProgressBar::new(100);
     let style = ProgressStyle::default_bar()
@@ -58,8 +61,9 @@ fn main() {
             if let Event::Key(key_event) = event::read().unwrap() {
                 match key_event.code {
                     KeyCode::Char('p') => {
+                        print!("pausing\r\n");
                         let _ = handle.tx.try_send(DownloadCommand::Pause);
-                        println!("Download paused!");
+                        print!("Download paused!\r\n");
                     }
                     KeyCode::Char('s') => {
                         let _ = handle.tx.try_send(DownloadCommand::Start);
@@ -70,6 +74,7 @@ fn main() {
         }
     }
 
+    disable_raw_mode().unwrap();
     handle.join.join().unwrap();
 }
 
