@@ -47,7 +47,7 @@ On NixOS, add the flake as an input and use its overlay:
 
 ### :crab: Cargo
 
-Requires Rust 1.85 or newer (edition 2024), plus `cmake` and a C compiler for `aws-lc-sys`.
+Requires Rust 1.85 or newer (edition 2024) and a C compiler.
 
 ```sh
 cargo install --git https://github.com/BrisklyDev/kasma

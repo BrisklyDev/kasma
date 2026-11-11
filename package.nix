@@ -1,8 +1,6 @@
 {
   lib,
   rustPlatform,
-  cmake,
-  perl,
 }:
 
 rustPlatform.buildRustPackage {
@@ -19,15 +17,6 @@ rustPlatform.buildRustPackage {
   };
 
   cargoLock.lockFile = ./Cargo.lock;
-
-  # aws-lc-sys (pulled in by rustls) builds C code with cmake.
-  nativeBuildInputs = [
-    cmake
-    perl
-  ];
-
-  # cmake hook must not take over the cargo build.
-  dontUseCmakeConfigure = true;
 
   meta = {
     description = "Multi-connection download accelerator";
