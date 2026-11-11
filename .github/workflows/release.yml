@@ -1,16 +1,10 @@
 name: Release
 
-# The version comes from Cargo.toml. When a push to main changes it to a
-# version that has no release yet, this workflow builds the binaries and
-# creates the tag and GitHub release for it.
+# Run by hand from the Actions tab (or `gh workflow run release.yml`).
+# The version comes from Cargo.toml. If that version has no release yet,
+# this workflow builds the binaries and creates the tag and GitHub release.
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - Cargo.toml
-      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
@@ -45,8 +39,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${{ steps.read.outputs.tag }}" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "Release ${{ steps.read.outputs.tag }} already exists, skipping."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Release ${{ steps.read.outputs.tag }} already exists. Bump the version in Cargo.toml first."
+            exit 1
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
