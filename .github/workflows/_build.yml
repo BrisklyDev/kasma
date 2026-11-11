@@ -1,0 +1,84 @@
+name: Build and upload
+
+# Reusable workflow called by the per-platform release workflows.
+# Reads the version from Cargo.toml, builds one target, and uploads the
+# archive to the GitHub release v<version>, creating the release if needed.
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        required: true
+        type: string
+      os:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ inputs.target }}
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+          echo "ASSET_BASE=kasma-v$version-${{ inputs.target }}" >> "$GITHUB_ENV"
+          echo "Cargo.toml version: $version"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.target }}
+
+      - name: Install musl tools
+        if: contains(inputs.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ inputs.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir "$ASSET_BASE"
+          cp "target/${{ inputs.target }}/release/kasma" README.md LICENSE "$ASSET_BASE/"
+          tar -czf "$ASSET_BASE.tar.gz" "$ASSET_BASE"
+          shasum -a 256 "$ASSET_BASE.tar.gz" > "$ASSET_BASE.tar.gz.sha256"
+          echo "ASSET=$ASSET_BASE.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir "$ASSET_BASE"
+          cp "target/${{ inputs.target }}/release/kasma.exe" README.md LICENSE "$ASSET_BASE/"
+          7z a "$ASSET_BASE.zip" "$ASSET_BASE"
+          sha256sum "$ASSET_BASE.zip" > "$ASSET_BASE.zip.sha256"
+          echo "ASSET=$ASSET_BASE.zip" >> "$GITHUB_ENV"
+
+      - name: Upload to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Kasma ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          body_path: .github/RELEASE.md
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256

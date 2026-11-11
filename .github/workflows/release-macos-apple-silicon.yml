@@ -1,0 +1,15 @@
+name: Release macOS Apple Silicon
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build macOS Apple Silicon
+    uses: ./.github/workflows/_build.yml
+    with:
+      target: aarch64-apple-darwin
+      os: macos-latest
