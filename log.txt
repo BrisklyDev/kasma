@@ -1,0 +1,1408 @@
+❯ zzi
+❯ cargo run
+warning: unused import: `crate::download_engine::http::byte_range::ByteRange`
+ --> src/main.rs:1:5
+  |
+1 | use crate::download_engine::http::byte_range::ByteRange;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `ByteRangeNode`, `ByteRangeStatus`, and `ByteRangeTree`
+ --> src/main.rs:3:5
+  |
+3 |     ByteRangeNode, ByteRangeStatus, ByteRangeTree,
+  |     ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused imports: `DownloadCommand` and `EngineToMainMsg`
+ --> src/main.rs:5:45
+  |
+5 | use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg};
+  |                                             ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::download_engine::utils::file::resolve_versioned_file_path`
+ --> src/main.rs:7:5
+  |
+7 | use crate::download_engine::utils::file::resolve_versioned_file_path;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `RunnableTask` and `http::http_download_engine::HttpDownloadEngine`
+ --> src/main.rs:9:19
+  |
+9 |     DownloadInfo, RunnableTask, http::http_download_engine::HttpDownloadEngine, spawn_http_engine,
+  |                   ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::path::PathBuf`
+  --> src/main.rs:11:5
+   |
+11 | use std::path::PathBuf;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `result` and `thread`
+  --> src/main.rs:12:11
+   |
+12 | use std::{result, thread};
+   |           ^^^^^^  ^^^^^^
+
+warning: unused import: `tokio::runtime::Runtime`
+  --> src/main.rs:13:5
+   |
+13 | use tokio::runtime::Runtime;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `EngineToWorkerMsg`
+ --> src/download_engine.rs:3:79
+  |
+3 | use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg, EngineToWorkerMsg};
+  |                                                                               ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::path::PathBuf`
+ --> src/download_engine.rs:7:5
+  |
+7 | use std::path::PathBuf;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `BodyExt`
+ --> src/download_engine/http.rs:1:22
+  |
+1 | use http_body_util::{BodyExt, Empty};
+  |                      ^^^^^^^
+
+warning: unused import: `Bytes`
+ --> src/download_engine/http.rs:2:19
+  |
+2 | use hyper::body::{Bytes, Incoming};
+  |                   ^^^^^
+
+warning: unused import: `hyper_rustls::HttpsConnector`
+ --> src/download_engine/http.rs:5:5
+  |
+5 | use hyper_rustls::HttpsConnector;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `hyper_util::client::legacy::Client`
+ --> src/download_engine/http.rs:6:5
+  |
+6 | use hyper_util::client::legacy::Client;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `hyper_util::client::legacy::connect::HttpConnector`
+ --> src/download_engine/http.rs:7:5
+  |
+7 | use hyper_util::client::legacy::connect::HttpConnector;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `TokioExecutor` and `TokioTimer`
+ --> src/download_engine/http.rs:8:22
+  |
+8 | use hyper_util::rt::{TokioExecutor, TokioTimer};
+  |                      ^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+ --> src/download_engine/http.rs:9:5
+  |
+9 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Duration`
+  --> src/download_engine/http.rs:12:5
+   |
+12 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `anyhow`
+  --> src/download_engine/http/http_download_engine.rs:22:18
+   |
+22 | use anyhow::{Ok, anyhow};
+   |                  ^^^^^^
+
+warning: unused import: `std::cmp::PartialEq`
+  --> src/download_engine/http/http_download_engine.rs:23:5
+   |
+23 | use std::cmp::PartialEq;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::rc::Rc`
+  --> src/download_engine/http/http_download_engine.rs:28:5
+   |
+28 | use std::rc::Rc;
+   |     ^^^^^^^^^^^
+
+warning: unused import: `Instant`
+  --> src/download_engine/http/http_download_engine.rs:30:27
+   |
+30 | use std::time::{Duration, Instant};
+   |                           ^^^^^^^
+
+warning: unnecessary parentheses around `if` condition
+    --> src/download_engine/http/http_download_engine.rs:1118:12
+     |
+1118 |         if (!dir.exists()) {
+     |            ^             ^
+     |
+     = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+     |
+1118 -         if (!dir.exists()) {
+1118 +         if !dir.exists() {
+     |
+
+warning: unused import: `self`
+ --> src/download_engine/http/http_download_worker.rs:2:48
+  |
+2 | use crate::download_engine::http::byte_range::{self, ByteRange};
+  |                                                ^^^^
+
+warning: unused import: `ClientError`
+  --> src/download_engine/http/http_download_worker.rs:10:36
+   |
+10 | use crate::download_engine::http::{ClientError, HttpClient};
+   |                                    ^^^^^^^^^^^
+
+warning: unused import: `std::os::linux::raw::stat`
+  --> src/download_engine/http/http_download_worker.rs:22:5
+   |
+22 | use std::os::linux::raw::stat;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::pin::Pin`
+  --> src/download_engine/http/http_download_worker.rs:24:5
+   |
+24 | use std::pin::Pin;
+   |     ^^^^^^^^^^^^^
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:229:25
+    |
+229 |                         /// TODO fix
+    |                         ^^^^^^^^^^^^
+230 |                         Ok(Status::Resetting)
+    |                         --------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+    = note: `#[warn(unused_doc_comments)]` on by default
+
+warning: unused attribute `doc`
+   --> src/download_engine/http/http_download_worker.rs:233:25
+    |
+233 |                         /// TODO fix
+    |                         ^^^^^^^^^^^^
+    |
+note: the built-in attribute `doc` will be ignored, since it's applied to the macro invocation `println`
+   --> src/download_engine/http/http_download_worker.rs:234:21
+    |
+234 |                     println!(
+    |                     ^^^^^^^
+    = note: `#[warn(unused_attributes)]` on by default
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:267:45
+    |
+267 | ...                   /// TODO fix
+    |                       ^^^^^^^^^^^^
+268 | ...                   return Ok(Status::Resetting);
+    |                       ---------------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:271:45
+    |
+271 | ...                   /// TODO fix
+    |                       ^^^^^^^^^^^^
+272 | ...                   return Ok(Status::Resetting);
+    |                       ---------------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+
+warning: unused import: `std::path::PathBuf`
+ --> src/download_engine/utils.rs:1:5
+  |
+1 | use std::path::PathBuf;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `fs` and `io`
+ --> src/download_engine/utils.rs:3:11
+  |
+3 | use std::{fs, io};
+  |           ^^  ^^
+
+warning: use of deprecated struct `std::os::linux::raw::stat`: these type aliases are no longer supported by the standard library, the `libc` crate on crates.io should be used instead for the correct definitions
+  --> src/download_engine/http/http_download_worker.rs:22:26
+   |
+22 | use std::os::linux::raw::stat;
+   |                          ^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `range`
+   --> src/download_engine/http/http_download_worker.rs:270:77
+    |
+270 | ...                   EngineToWorkerMsg::StartReuseWorker(range) => {
+    |                                                           ^^^^^ help: if this is intentional, prefix it with an underscore: `_range`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `node`
+   --> src/download_engine/http/http_download_engine.rs:751:17
+    |
+751 |             let node = tree_ref.search_node(&range);
+    |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_node`
+
+warning: field `headers` is never read
+  --> src/download_engine.rs:32:5
+   |
+28 | pub struct DownloadItem {
+   |            ------------ field in this struct
+...
+32 |     headers: HashMap<String, String>,
+   |     ^^^^^^^
+   |
+   = note: `DownloadItem` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `to_main_rx` is never read
+  --> src/download_engine/http/http_download_engine.rs:62:5
+   |
+57 | pub struct HttpDownloadEngine {
+   |            ------------------ field in this struct
+...
+62 |     to_main_rx: Sender<EngineToMainMsg>,
+   |     ^^^^^^^^^^
+
+warning: function `increment_retry_and_wait` is never used
+   --> src/download_engine/http/http_download_worker.rs:815:10
+    |
+815 | async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32) {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `address`, `username`, and `password` are never read
+ --> src/download_engine/setting.rs:5:5
+  |
+4 | pub struct NetworkProxy {
+  |            ------------ fields in this struct
+5 |     address: String,
+  |     ^^^^^^^
+6 |     username: String,
+  |     ^^^^^^^^
+7 |     password: String,
+  |     ^^^^^^^^
+  |
+  = note: `NetworkProxy` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: `kasma` (bin "kasma") generated 40 warnings (run `cargo fix --bin "kasma"` to apply 29 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target/debug/kasma`
+Following redirect to: https://dl5-downloadha.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+Failed to fetch file info! Transport error: client error (Connect)
+❯ cargo run
+warning: unused import: `crate::download_engine::http::byte_range::ByteRange`
+ --> src/main.rs:1:5
+  |
+1 | use crate::download_engine::http::byte_range::ByteRange;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `ByteRangeNode`, `ByteRangeStatus`, and `ByteRangeTree`
+ --> src/main.rs:3:5
+  |
+3 |     ByteRangeNode, ByteRangeStatus, ByteRangeTree,
+  |     ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused imports: `DownloadCommand` and `EngineToMainMsg`
+ --> src/main.rs:5:45
+  |
+5 | use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg};
+  |                                             ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::download_engine::utils::file::resolve_versioned_file_path`
+ --> src/main.rs:7:5
+  |
+7 | use crate::download_engine::utils::file::resolve_versioned_file_path;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `RunnableTask` and `http::http_download_engine::HttpDownloadEngine`
+ --> src/main.rs:9:19
+  |
+9 |     DownloadInfo, RunnableTask, http::http_download_engine::HttpDownloadEngine, spawn_http_engine,
+  |                   ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::path::PathBuf`
+  --> src/main.rs:11:5
+   |
+11 | use std::path::PathBuf;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `result` and `thread`
+  --> src/main.rs:12:11
+   |
+12 | use std::{result, thread};
+   |           ^^^^^^  ^^^^^^
+
+warning: unused import: `tokio::runtime::Runtime`
+  --> src/main.rs:13:5
+   |
+13 | use tokio::runtime::Runtime;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `EngineToWorkerMsg`
+ --> src/download_engine.rs:3:79
+  |
+3 | use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg, EngineToWorkerMsg};
+  |                                                                               ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::path::PathBuf`
+ --> src/download_engine.rs:7:5
+  |
+7 | use std::path::PathBuf;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `BodyExt`
+ --> src/download_engine/http.rs:1:22
+  |
+1 | use http_body_util::{BodyExt, Empty};
+  |                      ^^^^^^^
+
+warning: unused import: `Bytes`
+ --> src/download_engine/http.rs:2:19
+  |
+2 | use hyper::body::{Bytes, Incoming};
+  |                   ^^^^^
+
+warning: unused import: `hyper_rustls::HttpsConnector`
+ --> src/download_engine/http.rs:5:5
+  |
+5 | use hyper_rustls::HttpsConnector;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `hyper_util::client::legacy::Client`
+ --> src/download_engine/http.rs:6:5
+  |
+6 | use hyper_util::client::legacy::Client;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `hyper_util::client::legacy::connect::HttpConnector`
+ --> src/download_engine/http.rs:7:5
+  |
+7 | use hyper_util::client::legacy::connect::HttpConnector;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `TokioExecutor` and `TokioTimer`
+ --> src/download_engine/http.rs:8:22
+  |
+8 | use hyper_util::rt::{TokioExecutor, TokioTimer};
+  |                      ^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+ --> src/download_engine/http.rs:9:5
+  |
+9 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Duration`
+  --> src/download_engine/http.rs:12:5
+   |
+12 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `anyhow`
+  --> src/download_engine/http/http_download_engine.rs:22:18
+   |
+22 | use anyhow::{Ok, anyhow};
+   |                  ^^^^^^
+
+warning: unused import: `std::cmp::PartialEq`
+  --> src/download_engine/http/http_download_engine.rs:23:5
+   |
+23 | use std::cmp::PartialEq;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::rc::Rc`
+  --> src/download_engine/http/http_download_engine.rs:28:5
+   |
+28 | use std::rc::Rc;
+   |     ^^^^^^^^^^^
+
+warning: unused import: `Instant`
+  --> src/download_engine/http/http_download_engine.rs:30:27
+   |
+30 | use std::time::{Duration, Instant};
+   |                           ^^^^^^^
+
+warning: unnecessary parentheses around `if` condition
+    --> src/download_engine/http/http_download_engine.rs:1118:12
+     |
+1118 |         if (!dir.exists()) {
+     |            ^             ^
+     |
+     = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+     |
+1118 -         if (!dir.exists()) {
+1118 +         if !dir.exists() {
+     |
+
+warning: unused import: `self`
+ --> src/download_engine/http/http_download_worker.rs:2:48
+  |
+2 | use crate::download_engine::http::byte_range::{self, ByteRange};
+  |                                                ^^^^
+
+warning: unused import: `ClientError`
+  --> src/download_engine/http/http_download_worker.rs:10:36
+   |
+10 | use crate::download_engine::http::{ClientError, HttpClient};
+   |                                    ^^^^^^^^^^^
+
+warning: unused import: `std::os::linux::raw::stat`
+  --> src/download_engine/http/http_download_worker.rs:22:5
+   |
+22 | use std::os::linux::raw::stat;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::pin::Pin`
+  --> src/download_engine/http/http_download_worker.rs:24:5
+   |
+24 | use std::pin::Pin;
+   |     ^^^^^^^^^^^^^
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:229:25
+    |
+229 |                         /// TODO fix
+    |                         ^^^^^^^^^^^^
+230 |                         Ok(Status::Resetting)
+    |                         --------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+    = note: `#[warn(unused_doc_comments)]` on by default
+
+warning: unused attribute `doc`
+   --> src/download_engine/http/http_download_worker.rs:233:25
+    |
+233 |                         /// TODO fix
+    |                         ^^^^^^^^^^^^
+    |
+note: the built-in attribute `doc` will be ignored, since it's applied to the macro invocation `println`
+   --> src/download_engine/http/http_download_worker.rs:234:21
+    |
+234 |                     println!(
+    |                     ^^^^^^^
+    = note: `#[warn(unused_attributes)]` on by default
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:267:45
+    |
+267 | ...                   /// TODO fix
+    |                       ^^^^^^^^^^^^
+268 | ...                   return Ok(Status::Resetting);
+    |                       ---------------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:271:45
+    |
+271 | ...                   /// TODO fix
+    |                       ^^^^^^^^^^^^
+272 | ...                   return Ok(Status::Resetting);
+    |                       ---------------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+
+warning: unused import: `std::path::PathBuf`
+ --> src/download_engine/utils.rs:1:5
+  |
+1 | use std::path::PathBuf;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `fs` and `io`
+ --> src/download_engine/utils.rs:3:11
+  |
+3 | use std::{fs, io};
+  |           ^^  ^^
+
+warning: use of deprecated struct `std::os::linux::raw::stat`: these type aliases are no longer supported by the standard library, the `libc` crate on crates.io should be used instead for the correct definitions
+  --> src/download_engine/http/http_download_worker.rs:22:26
+   |
+22 | use std::os::linux::raw::stat;
+   |                          ^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `range`
+   --> src/download_engine/http/http_download_worker.rs:270:77
+    |
+270 | ...                   EngineToWorkerMsg::StartReuseWorker(range) => {
+    |                                                           ^^^^^ help: if this is intentional, prefix it with an underscore: `_range`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `node`
+   --> src/download_engine/http/http_download_engine.rs:751:17
+    |
+751 |             let node = tree_ref.search_node(&range);
+    |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_node`
+
+warning: field `headers` is never read
+  --> src/download_engine.rs:32:5
+   |
+28 | pub struct DownloadItem {
+   |            ------------ field in this struct
+...
+32 |     headers: HashMap<String, String>,
+   |     ^^^^^^^
+   |
+   = note: `DownloadItem` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `to_main_rx` is never read
+  --> src/download_engine/http/http_download_engine.rs:62:5
+   |
+57 | pub struct HttpDownloadEngine {
+   |            ------------------ field in this struct
+...
+62 |     to_main_rx: Sender<EngineToMainMsg>,
+   |     ^^^^^^^^^^
+
+warning: function `increment_retry_and_wait` is never used
+   --> src/download_engine/http/http_download_worker.rs:815:10
+    |
+815 | async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32) {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `address`, `username`, and `password` are never read
+ --> src/download_engine/setting.rs:5:5
+  |
+4 | pub struct NetworkProxy {
+  |            ------------ fields in this struct
+5 |     address: String,
+  |     ^^^^^^^
+6 |     username: String,
+  |     ^^^^^^^^
+7 |     password: String,
+  |     ^^^^^^^^
+  |
+  = note: `NetworkProxy` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: `kasma` (bin "kasma") generated 40 warnings (run `cargo fix --bin "kasma"` to apply 29 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/kasma`
+Following redirect to: https://dl5-downloadha.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+Failed to fetch file info! Transport error: client error (Connect)
+❯ cargo run
+warning: unused import: `crate::download_engine::http::byte_range::ByteRange`
+ --> src/main.rs:1:5
+  |
+1 | use crate::download_engine::http::byte_range::ByteRange;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `ByteRangeNode`, `ByteRangeStatus`, and `ByteRangeTree`
+ --> src/main.rs:3:5
+  |
+3 |     ByteRangeNode, ByteRangeStatus, ByteRangeTree,
+  |     ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused imports: `DownloadCommand` and `EngineToMainMsg`
+ --> src/main.rs:5:45
+  |
+5 | use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg};
+  |                                             ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::download_engine::utils::file::resolve_versioned_file_path`
+ --> src/main.rs:7:5
+  |
+7 | use crate::download_engine::utils::file::resolve_versioned_file_path;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `RunnableTask` and `http::http_download_engine::HttpDownloadEngine`
+ --> src/main.rs:9:19
+  |
+9 |     DownloadInfo, RunnableTask, http::http_download_engine::HttpDownloadEngine, spawn_http_engine,
+  |                   ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::path::PathBuf`
+  --> src/main.rs:11:5
+   |
+11 | use std::path::PathBuf;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `result` and `thread`
+  --> src/main.rs:12:11
+   |
+12 | use std::{result, thread};
+   |           ^^^^^^  ^^^^^^
+
+warning: unused import: `tokio::runtime::Runtime`
+  --> src/main.rs:13:5
+   |
+13 | use tokio::runtime::Runtime;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `EngineToWorkerMsg`
+ --> src/download_engine.rs:3:79
+  |
+3 | use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg, EngineToWorkerMsg};
+  |                                                                               ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::path::PathBuf`
+ --> src/download_engine.rs:7:5
+  |
+7 | use std::path::PathBuf;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `BodyExt`
+ --> src/download_engine/http.rs:1:22
+  |
+1 | use http_body_util::{BodyExt, Empty};
+  |                      ^^^^^^^
+
+warning: unused import: `Bytes`
+ --> src/download_engine/http.rs:2:19
+  |
+2 | use hyper::body::{Bytes, Incoming};
+  |                   ^^^^^
+
+warning: unused import: `hyper_rustls::HttpsConnector`
+ --> src/download_engine/http.rs:5:5
+  |
+5 | use hyper_rustls::HttpsConnector;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `hyper_util::client::legacy::Client`
+ --> src/download_engine/http.rs:6:5
+  |
+6 | use hyper_util::client::legacy::Client;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `hyper_util::client::legacy::connect::HttpConnector`
+ --> src/download_engine/http.rs:7:5
+  |
+7 | use hyper_util::client::legacy::connect::HttpConnector;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `TokioExecutor` and `TokioTimer`
+ --> src/download_engine/http.rs:8:22
+  |
+8 | use hyper_util::rt::{TokioExecutor, TokioTimer};
+  |                      ^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `std::collections::HashMap`
+ --> src/download_engine/http.rs:9:5
+  |
+9 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Duration`
+  --> src/download_engine/http.rs:12:5
+   |
+12 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `anyhow`
+  --> src/download_engine/http/http_download_engine.rs:22:18
+   |
+22 | use anyhow::{Ok, anyhow};
+   |                  ^^^^^^
+
+warning: unused import: `std::cmp::PartialEq`
+  --> src/download_engine/http/http_download_engine.rs:23:5
+   |
+23 | use std::cmp::PartialEq;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::rc::Rc`
+  --> src/download_engine/http/http_download_engine.rs:28:5
+   |
+28 | use std::rc::Rc;
+   |     ^^^^^^^^^^^
+
+warning: unused import: `Instant`
+  --> src/download_engine/http/http_download_engine.rs:30:27
+   |
+30 | use std::time::{Duration, Instant};
+   |                           ^^^^^^^
+
+warning: unnecessary parentheses around `if` condition
+    --> src/download_engine/http/http_download_engine.rs:1118:12
+     |
+1118 |         if (!dir.exists()) {
+     |            ^             ^
+     |
+     = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+     |
+1118 -         if (!dir.exists()) {
+1118 +         if !dir.exists() {
+     |
+
+warning: unused import: `self`
+ --> src/download_engine/http/http_download_worker.rs:2:48
+  |
+2 | use crate::download_engine::http::byte_range::{self, ByteRange};
+  |                                                ^^^^
+
+warning: unused import: `ClientError`
+  --> src/download_engine/http/http_download_worker.rs:10:36
+   |
+10 | use crate::download_engine::http::{ClientError, HttpClient};
+   |                                    ^^^^^^^^^^^
+
+warning: unused import: `std::os::linux::raw::stat`
+  --> src/download_engine/http/http_download_worker.rs:22:5
+   |
+22 | use std::os::linux::raw::stat;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::pin::Pin`
+  --> src/download_engine/http/http_download_worker.rs:24:5
+   |
+24 | use std::pin::Pin;
+   |     ^^^^^^^^^^^^^
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:229:25
+    |
+229 |                         /// TODO fix
+    |                         ^^^^^^^^^^^^
+230 |                         Ok(Status::Resetting)
+    |                         --------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+    = note: `#[warn(unused_doc_comments)]` on by default
+
+warning: unused attribute `doc`
+   --> src/download_engine/http/http_download_worker.rs:233:25
+    |
+233 |                         /// TODO fix
+    |                         ^^^^^^^^^^^^
+    |
+note: the built-in attribute `doc` will be ignored, since it's applied to the macro invocation `println`
+   --> src/download_engine/http/http_download_worker.rs:234:21
+    |
+234 |                     println!(
+    |                     ^^^^^^^
+    = note: `#[warn(unused_attributes)]` on by default
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:267:45
+    |
+267 | ...                   /// TODO fix
+    |                       ^^^^^^^^^^^^
+268 | ...                   return Ok(Status::Resetting);
+    |                       ---------------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+
+warning: unused doc comment
+   --> src/download_engine/http/http_download_worker.rs:271:45
+    |
+271 | ...                   /// TODO fix
+    |                       ^^^^^^^^^^^^
+272 | ...                   return Ok(Status::Resetting);
+    |                       ---------------------------- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+
+warning: unused import: `std::path::PathBuf`
+ --> src/download_engine/utils.rs:1:5
+  |
+1 | use std::path::PathBuf;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `fs` and `io`
+ --> src/download_engine/utils.rs:3:11
+  |
+3 | use std::{fs, io};
+  |           ^^  ^^
+
+warning: use of deprecated struct `std::os::linux::raw::stat`: these type aliases are no longer supported by the standard library, the `libc` crate on crates.io should be used instead for the correct definitions
+  --> src/download_engine/http/http_download_worker.rs:22:26
+   |
+22 | use std::os::linux::raw::stat;
+   |                          ^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `range`
+   --> src/download_engine/http/http_download_worker.rs:270:77
+    |
+270 | ...                   EngineToWorkerMsg::StartReuseWorker(range) => {
+    |                                                           ^^^^^ help: if this is intentional, prefix it with an underscore: `_range`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `node`
+   --> src/download_engine/http/http_download_engine.rs:751:17
+    |
+751 |             let node = tree_ref.search_node(&range);
+    |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_node`
+
+warning: field `headers` is never read
+  --> src/download_engine.rs:32:5
+   |
+28 | pub struct DownloadItem {
+   |            ------------ field in this struct
+...
+32 |     headers: HashMap<String, String>,
+   |     ^^^^^^^
+   |
+   = note: `DownloadItem` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `to_main_rx` is never read
+  --> src/download_engine/http/http_download_engine.rs:62:5
+   |
+57 | pub struct HttpDownloadEngine {
+   |            ------------------ field in this struct
+...
+62 |     to_main_rx: Sender<EngineToMainMsg>,
+   |     ^^^^^^^^^^
+
+warning: function `increment_retry_and_wait` is never used
+   --> src/download_engine/http/http_download_worker.rs:815:10
+    |
+815 | async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32) {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `address`, `username`, and `password` are never read
+ --> src/download_engine/setting.rs:5:5
+  |
+4 | pub struct NetworkProxy {
+  |            ------------ fields in this struct
+5 |     address: String,
+  |     ^^^^^^^
+6 |     username: String,
+  |     ^^^^^^^^
+7 |     password: String,
+  |     ^^^^^^^^
+  |
+  = note: `NetworkProxy` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: `kasma` (bin "kasma") generated 40 warnings (run `cargo fix --bin "kasma"` to apply 29 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/kasma`
+Following redirect to: https://dl5-downloadha.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+Following redirect to: https://edge31.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+{"date": "Thu, 21 Aug 2025 11:18:40 GMT", "content-type": "application/octet-stream", "content-length": "92213248", "last-modified": "Mon, 26 May 2025 06:27:25 GMT", "server": "AsiatechCloudCDN/3.1", "accept-ranges": "bytes", "via": "http/1.1 mid08.cdn.ir (AsiatechCloudEdge/3.1), http/1.1 edge31.cdn.ir (AsiatechCloudEdge/3.1)", "etag": "\"683409cd-57f1000\"", "age": "0", "connection": "keep-alive"}
+Total file size: 92213248
+Inside start
+Prepopulating worker #0
+Prepopulating worker #1
+Prepopulating worker #2
+Prepopulating worker #3
+Prepopulating worker #4
+Prepopulating worker #5
+Prepopulating worker #6
+Prepopulating worker #7
+Tree result: └── [0-92213248] (status: ToDownload, worker: 0)
+
+Spawned worker #0
+#0 Starting download with range ByteRange::0-92213248
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+New startbyte: 0 end: 92213248
+Status for checktemp Connecting
+Total download progress: 0
+Total Speed: 0 B/s
+Request range was == with start
+Status for checktemp Connecting
+Total download progress: 0
+Total Speed: 0 B/s
+Following redirect to: https://dl5-downloadha.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+Status for checktemp Connecting
+Total download progress: 0
+Total Speed: 0 B/s
+Following redirect to: https://edge31.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+Status for checktemp Connecting
+Total download progress: 0
+Total Speed: 0 B/s
+Flushed buffer 0#0-81919
+Status for checktemp RangeComplete
+Total download progress: 0.000888375605205881
+Total Speed: 0 B/s
+Assemble failed
+File assembled successfully
+Flushed buffer 0#81920-163839
+Flushed buffer 0#163840-245759
+Flushed buffer 0#245760-327679
+Flushed buffer 0#327680-409599
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Status for checktemp Downloading
+Total download progress: 0.004974903389152934
+Total Speed: 0 B/s
+Flushed buffer 0#409600-491519
+Flushed buffer 0#491520-573439
+Flushed buffer 0#573440-655359
+Speed 624.89 KB/s
+Status for checktemp Downloading
+Total download progress: 0.00888375605205881
+Total Speed: 624.89 KB/s
+Status for checktemp Downloading
+Total download progress: 0.014746254247545863
+Total Speed: 624.89 KB/s
+Flushed buffer 0#655360-1949623
+Status for checktemp Downloading
+Total download progress: 0.021320233726069383
+Total Speed: 624.89 KB/s
+Status for checktemp Downloading
+Total download progress: 0.02878180801092702
+Total Speed: 624.89 KB/s
+Flushed buffer 0#1949624-3243815
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Pre-split byte range tree:
+└── [0-92213248] (status: Downloading, worker: 0)
+
+Trying to find node
+Range: ByteRange::0-92213248
+Tree L:
+ └── [0-92213248] (status: Downloading, worker: 0)
+    ├── [0-46106624] (status: ToDownload, worker: 0)
+    └── [46106625-92213248] (status: ToDownload, worker: 1)
+
+Lowest lvl:
+ByteRange::0-92213248
+Post-split byte range tree:
+└── [0-92213248] (status: Downloading, worker: 0)
+    ├── [0-46106624] (status: ToDownload, worker: 0)
+    └── [46106625-92213248] (status: ToDownload, worker: 1)
+
+Refreshing worker ranges...
+processing worker 0
+sending refresh range 0 to worker ByteRange::0-46106624
+Status for checktemp Downloading
+Total download progress: 0.038375483748278774
+Total Speed: 624.89 KB/s
+Refreshed byte range in inner for worker 0
+#0 Byte range refreshed ByteRange::0-46106624
+Handling refresh success from worker 0 with requested range ByteRange::0-46106624
+Spawned worker #1
+Tree after spawn for worker 0
+└── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Downloading, worker: 0)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+#1 Starting download with range ByteRange::46106625-92213248
+New startbyte: 46106625 end: 92213248
+Request range was == with start
+Status for checktemp Connecting
+Total download progress: 0.0481468346066717
+Total Speed: 624.89 KB/s
+Flushed buffer 0#3243816-4538079
+Speed 3.41 MB/s
+Following redirect to: https://dl5-downloadha.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+Status for checktemp Connecting
+Total download progress: 0.058984236191311684
+Total Speed: 3.41 MB/s
+Status for checktemp Connecting
+Total download progress: 0.06253773861213521
+Total Speed: 3.41 MB/s
+Status for checktemp Connecting
+Total download progress: 0.06626891615399991
+Total Speed: 3.41 MB/s
+Following redirect to: https://edge31.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Status for checktemp Connecting
+Total download progress: 0.07088768850219873
+Total Speed: 3.41 MB/s
+Status for checktemp Connecting
+Total download progress: 0.08030368911850931
+Total Speed: 3.41 MB/s
+Speed 6.25 KB/s
+Speed 2.86 MB/s
+Flushed buffer 1#46106625-46183327
+Status for checktemp RangeComplete
+Status for checktemp Downloading
+Total download progress: 0.09108529611710456
+Total Speed: 2.86 MB/s
+Flushed buffer 1#46183328-46265247
+Flushed buffer 1#46265248-46347167
+Flushed buffer 1#46347168-46429087
+Status for checktemp Downloading
+Total download progress: 0.10156734745966219
+Total Speed: 2.86 MB/s
+Flushed buffer 1#46429088-46511007
+Flushed buffer 1#46511008-46592927
+Flushed buffer 1#46592928-46674847
+Flushed buffer 1#46674848-46756767
+Flushed buffer 1#46756768-46838687
+Status for checktemp RangeComplete
+Status for checktemp Downloading
+Total download progress: 0.1108056729549316
+Total Speed: 2.86 MB/s
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Pre-split byte range tree:
+└── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Downloading, worker: 0)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Trying to find node
+Range: ByteRange::0-46106624
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Downloading, worker: 0)
+    │   ├── [0-23053312] (status: ToDownload, worker: 0)
+    │   └── [23053313-46106624] (status: ToDownload, worker: 2)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-46106624
+ByteRange::46106625-92213248
+Trying to find node
+Range: ByteRange::46106625-92213248
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Downloading, worker: 0)
+    │   ├── [0-23053312] (status: ToDownload, worker: 0)
+    │   └── [23053313-46106624] (status: ToDownload, worker: 2)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+        ├── [46106625-69159936] (status: ToDownload, worker: 1)
+        └── [69159937-92213248] (status: ToDownload, worker: 3)
+
+Lowest lvl:
+ByteRange::0-23053312
+ByteRange::23053313-46106624
+ByteRange::46106625-92213248
+Post-split byte range tree:
+└── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Downloading, worker: 0)
+    │   ├── [0-23053312] (status: ToDownload, worker: 0)
+    │   └── [23053313-46106624] (status: ToDownload, worker: 2)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+        ├── [46106625-69159936] (status: ToDownload, worker: 1)
+        └── [69159937-92213248] (status: ToDownload, worker: 3)
+
+Refreshing worker ranges...
+processing worker 1
+sending refresh range 1 to worker ByteRange::46106625-69159936
+processing worker 0
+sending refresh range 0 to worker ByteRange::0-23053312
+Status for checktemp RangeComplete
+Status for checktemp Downloading
+Refreshed byte range in inner for worker 1
+Total download progress: 0.1108056729549316
+Total Speed: 2.86 MB/s
+HandleRefreshByteRangeRefused coming from worker 1
+Refreshed byte range in inner for worker 0
+#0 Byte range refreshed ByteRange::0-23053312
+Handling refresh success from worker 0 with requested range ByteRange::0-23053312
+Flushed buffer 1#46838688-46920607
+Spawned worker #2
+Tree after spawn for worker 0
+└── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+#2 Starting download with range ByteRange::23053313-46106624
+New startbyte: 23053313 end: 46106624
+Request range was == with start
+Flushed buffer 1#46920608-47002527
+Status for checktemp Downloading
+Total download progress: 0.11542522610200218
+Total Speed: 2.86 MB/s
+Flushed buffer 1#47002528-47084447
+Status for checktemp RangeComplete
+Status for checktemp Connecting
+Total download progress: 0.11666895194929042
+Total Speed: 2.86 MB/s
+Following redirect to: https://dl5-downloadha.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+Speed 848.37 KB/s
+Speed 1.58 MB/s
+Flushed buffer 0#4538080-9796983
+Status for checktemp Downloading
+Total download progress: 0.12537425208143627
+Total Speed: 2.41 MB/s
+Status for checktemp Downloading
+Total download progress: 0.13781072975544684
+Total Speed: 2.41 MB/s
+Following redirect to: https://edge31.105.ir.cdn.ir/hosein/Game/May2025/24/Updates/Google_Chrome_v109.0.5414.120_32-bit_www.Downloadha.com_.msi
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Status for checktemp Downloading
+Total download progress: 0.1504248825504986
+Total Speed: 2.41 MB/s
+Flushed buffer 1#47084448-48837391
+Status for checktemp RangeComplete
+Status for checktemp Connecting
+Total download progress: 0.1543337352134045
+Total Speed: 2.41 MB/s
+Status for checktemp Downloading
+Total download progress: 0.1582418070774386
+Total Speed: 2.41 MB/s
+Speed 5.45 KB/s
+Speed 1.72 MB/s
+Speed 1.75 MB/s
+Status for checktemp Downloading
+Total download progress: 0.16336609247296008
+Total Speed: 3.48 MB/s
+Status for checktemp Downloading
+Total download progress: 0.17118301699990007
+Total Speed: 3.48 MB/s
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Pre-split byte range tree:
+└── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Trying to find node
+Range: ByteRange::0-23053312
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-23053312
+ByteRange::23053313-46106624
+ByteRange::46106625-92213248
+Trying to find node
+Range: ByteRange::23053313-46106624
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-11526656
+ByteRange::11526657-23053312
+ByteRange::23053313-46106624
+ByteRange::46106625-92213248
+Trying to find node
+Range: ByteRange::46106625-69159936
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-11526656
+ByteRange::11526657-23053312
+ByteRange::23053313-34579968
+ByteRange::34579969-46106624
+ByteRange::46106625-92213248
+Engine error: request_byte_range_refresh_new_worker:: Failed to split tree Failed to find node index
+Status for checktemp Downloading
+Total download progress: 0.1738481438155177
+Total Speed: 3.48 MB/s
+Flushed buffer 2#23053313-23132623
+Status for checktemp Downloading
+Total download progress: 0.18255344394766357
+Total Speed: 3.48 MB/s
+Status for checktemp Downloading
+Total download progress: 0.19605597234792121
+Total Speed: 3.48 MB/s
+Flushed buffer 2#23132624-23214543
+Flushed buffer 0#9796984-13483167
+Status for checktemp Downloading
+Total download progress: 0.20707104905360235
+Total Speed: 3.48 MB/s
+Speed 175.36 KB/s
+Speed 1.83 MB/s
+Speed 1.92 MB/s
+Status for checktemp Downloading
+Total download progress: 0.21702007503303647
+Total Speed: 3.92 MB/s
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Status for checktemp Downloading
+Total download progress: 0.22856817710184116
+Total Speed: 3.92 MB/s
+Status for checktemp Downloading
+Total download progress: 0.23940557868648116
+Total Speed: 3.92 MB/s
+Flushed buffer 1#48837392-52687343
+Status for checktemp Downloading
+Total download progress: 0.2520197314815329
+Total Speed: 3.92 MB/s
+Status for checktemp Downloading
+Total download progress: 0.2651669096397081
+Total Speed: 3.92 MB/s
+Flushed buffer 2#23214544-23574991
+Speed 2.46 MB/s
+Speed 308.50 KB/s
+Speed 2.44 MB/s
+Status for checktemp Downloading
+Total download progress: 0.27902478828204813
+Total Speed: 5.20 MB/s
+worker reuse ticker not running ? queue is empty true - awaiting_reset_response false - total_download_progress false
+Pre-split byte range tree:
+└── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Trying to find node
+Range: ByteRange::0-11526656
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   │   ├── [0-5763328] (status: ToDownload, worker: 0)
+    │   │   │   └── [5763329-11526656] (status: ToDownload, worker: 7)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-11526656
+ByteRange::11526657-23053312
+ByteRange::23053313-34579968
+ByteRange::34579969-46106624
+ByteRange::46106625-92213248
+Trying to find node
+Range: ByteRange::11526657-23053312
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   │   ├── [0-5763328] (status: ToDownload, worker: 0)
+    │   │   │   └── [5763329-11526656] (status: ToDownload, worker: 7)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   │       ├── [11526657-17289984] (status: ToDownload, worker: 4)
+    │   │       └── [17289985-23053312] (status: ToDownload, worker: 8)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-5763328
+ByteRange::5763329-11526656
+ByteRange::11526657-23053312
+ByteRange::23053313-34579968
+ByteRange::34579969-46106624
+ByteRange::46106625-92213248
+Trying to find node
+Range: ByteRange::23053313-34579968
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   │   ├── [0-5763328] (status: ToDownload, worker: 0)
+    │   │   │   └── [5763329-11526656] (status: ToDownload, worker: 7)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   │       ├── [11526657-17289984] (status: ToDownload, worker: 4)
+    │   │       └── [17289985-23053312] (status: ToDownload, worker: 8)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       │   ├── [23053313-28816640] (status: ToDownload, worker: 2)
+    │       │   └── [28816641-34579968] (status: ToDownload, worker: 9)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-5763328
+ByteRange::5763329-11526656
+ByteRange::11526657-17289984
+ByteRange::17289985-23053312
+ByteRange::23053313-34579968
+ByteRange::34579969-46106624
+ByteRange::46106625-92213248
+Trying to find node
+Range: ByteRange::34579969-46106624
+Tree L:
+ └── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   │   ├── [0-5763328] (status: ToDownload, worker: 0)
+    │   │   │   └── [5763329-11526656] (status: ToDownload, worker: 7)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   │       ├── [11526657-17289984] (status: ToDownload, worker: 4)
+    │   │       └── [17289985-23053312] (status: ToDownload, worker: 8)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       │   ├── [23053313-28816640] (status: ToDownload, worker: 2)
+    │       │   └── [28816641-34579968] (status: ToDownload, worker: 9)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    │           ├── [34579969-40343296] (status: ToDownload, worker: 5)
+    │           └── [40343297-46106624] (status: ToDownload, worker: 10)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+ByteRange::0-5763328
+ByteRange::5763329-11526656
+ByteRange::11526657-17289984
+ByteRange::17289985-23053312
+ByteRange::23053313-28816640
+ByteRange::28816641-34579968
+ByteRange::34579969-46106624
+ByteRange::46106625-92213248
+Post-split byte range tree:
+└── [0-92213248] (status: Outdated, worker: 0)
+    ├── [0-46106624] (status: Outdated, worker: 0)
+    │   ├── [0-23053312] (status: Downloading, worker: 0)
+    │   │   ├── [0-11526656] (status: ToDownload, worker: 0)
+    │   │   │   ├── [0-5763328] (status: ToDownload, worker: 0)
+    │   │   │   └── [5763329-11526656] (status: ToDownload, worker: 7)
+    │   │   └── [11526657-23053312] (status: ToDownload, worker: 4)
+    │   │       ├── [11526657-17289984] (status: ToDownload, worker: 4)
+    │   │       └── [17289985-23053312] (status: ToDownload, worker: 8)
+    │   └── [23053313-46106624] (status: Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       │   ├── [23053313-28816640] (status: ToDownload, worker: 2)
+    │       │   └── [28816641-34579968] (status: ToDownload, worker: 9)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    │           ├── [34579969-40343296] (status: ToDownload, worker: 5)
+    │           └── [40343297-46106624] (status: ToDownload, worker: 10)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Refreshing worker ranges...
+processing worker 1
+sending refresh range 1 to worker ByteRange::46106625-92213248
+processing worker 2
+sending refresh range 2 to worker ByteRange::23053313-28816640
+processing worker 0
+sending refresh range 0 to worker ByteRange::0-5763328
+Status for checktemp Downloading
+Refreshed byte range in inner for worker 2
+Total download progress: 0.2905728903508529
+#2 Byte range refreshed ByteRange::23053313-28816640
+Refreshed byte range in inner for worker 0
+Total Speed: 5.20 MB/s
+Refreshed byte range in inner for worker 1
+#0 Byte range refreshed ByteRange::0-20291520
+#1 Byte range refreshed ByteRange::46106625-92213248
+Handling refresh success from worker 2 with requested range ByteRange::23053313-28816640
+Failed to spawn worker #9. Handle not found
+❯ sudo Downloading, worker: 2)
+    │       ├── [23053313-34579968] (status: ToDownload, worker: 2)
+    │       └── [34579969-46106624] (status: ToDownload, worker: 5)
+    └── [46106625-92213248] (status: Downloading, worker: 1)
+
+Lowest lvl:
+❯
+❯
+ryewell ~/Dev/kasma developer ≡*?2 ~4
+❯
+
