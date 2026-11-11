@@ -112,7 +112,3 @@ Retry forever on an unreliable connection:
 ```sh
 kasma --retries inf --timeout 30 https://example.com/file.iso
 ```
-
-## :scroll: License
-
-[MIT](LICENSE)
