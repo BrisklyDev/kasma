@@ -1,5 +1,6 @@
 use crate::download_engine::errors::DownloadError;
 use crate::download_engine::http::byte_range::{self, ByteRange};
+use crate::download_engine::http::rate_limiter::SharedRateLimiter;
 use crate::download_engine::http::http_download_engine::{
     MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN, WORKER_REUSE_TICKER_SECS,
 };
@@ -35,6 +36,8 @@ const MAX_FLUSH: u64 = 8 * 1024 * 1024; // 8 MB
 
 const LOG_BUFFER_SEND_TICKER_SECS: u64 = 1;
 
+pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 /// The worker is responsible for downloading a file using HTTP. Workers are spawned in their own
 /// threads by the engine, and a single-threaded tokio runtime is spawned on their threads.
 /// Workers communicate with the engine via the `to_engine_tx` and `from_engine_rx` to send and
@@ -60,6 +63,7 @@ pub struct HttpDownloadWorker {
     total_bytes_received: u64,
     cached_temp_files: Vec<TempFileMetadata>,
     terminated_on_completion: bool,
+    rate_limiter: Option<SharedRateLimiter>,
 }
 
 impl HttpDownloadWorker {
@@ -71,6 +75,7 @@ impl HttpDownloadWorker {
         to_engine_tx: Sender<WorkerToEngineMsg>,
         from_engine_rx: Receiver<EngineToWorkerMsg>,
         progress: Arc<Mutex<WorkerProgress>>,
+        rate_limiter: Option<SharedRateLimiter>,
     ) -> Self {
         HttpDownloadWorker {
             download_info: info,
@@ -92,6 +97,7 @@ impl HttpDownloadWorker {
             total_bytes_received: 0,
             cached_temp_files: vec![],
             terminated_on_completion: false,
+            rate_limiter,
             setting,
         }
     }
@@ -111,8 +117,10 @@ impl HttpDownloadWorker {
     async fn run_async(&mut self) {
         let handshake = ToEngineMessage::HandshakeResponse { reuse: false };
         self.send_to_engine(handshake).await;
-        let _ = self.start_download(false, false).await;
-        self.run_event_loop().await;
+        if self.start_download(false, false).await {
+            self.run_event_loop().await;
+        }
+        self.send_log_buffer_to_engine().await;
     }
 
     async fn run_event_loop(&mut self) {
@@ -121,7 +129,9 @@ impl HttpDownloadWorker {
 
             match self.from_engine_rx.recv().await {
                 Some(EngineToWorkerMsg::Start) => {
-                    self.start_download(false, false).await;
+                    if !self.start_download(false, false).await {
+                        break;
+                    }
                 }
                 Some(EngineToWorkerMsg::Stop) => {
                     worker_log!(self, "Cancel received");
@@ -138,29 +148,113 @@ impl HttpDownloadWorker {
                 }
                 Some(EngineToWorkerMsg::Reset) => {
                     worker_log!(self, "Reset received in event loop");
-                    self.start_download(false, true).await;
+                    if !self.start_download(false, true).await {
+                        break;
+                    }
                 }
                 Some(EngineToWorkerMsg::StartReuseWorker(range)) => {
                     worker_log!(self, "StartReuseWorker received in event loop");
                     self.byte_range = range;
-                    self.start_download(true, false).await;
+                    if !self.start_download(true, false).await {
+                        break;
+                    }
                 }
-                None => {
-                    // happens when the sender is dropped. Can be used to break and cleanup
+                Some(EngineToWorkerMsg::Terminate) | None => {
+                    // The engine has requested termination or dropped the sender.
+                    worker_log!(self, "Terminating worker");
+                    break;
                 }
             }
         }
     }
 
-    async fn start_download(&mut self, reuse: bool, reset: bool) {
-        match self.start_download_inner(reuse, reset).await {
-            Ok(Status::RangeComplete) => {
-                self.send_to_engine(ToEngineMessage::Complete(self.byte_range.clone()))
-                    .await
+    /// Starts the download and reports the result to the engine.
+    /// Returns false if the worker has been asked to terminate.
+    async fn start_download(&mut self, mut reuse: bool, mut reset: bool) -> bool {
+        loop {
+            match self.start_download_inner(reuse, reset).await {
+                Ok(Status::RangeComplete) => {
+                    self.send_to_engine(ToEngineMessage::Complete(self.byte_range.clone()))
+                        .await;
+                }
+                Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
+                // The connection was interrupted by a reset or a refreshed byte range before
+                // the response arrived. Restart the connection immediately.
+                Ok(Status::Resetting) => {
+                    reset = true;
+                    reuse = false;
+                    continue;
+                }
+                Ok(Status::Starting) => {
+                    // Interrupted by a StartReuseWorker command. byte_range is already updated.
+                    reset = false;
+                    reuse = true;
+                    continue;
+                }
+                Ok(Status::Complete) => return false, // termination requested
+                Ok(_) => {}
+                Err(DownloadError::InvalidCommand) => {}
+                Err(e) => {
+                    worker_log!(self, "Download failed: {}", e);
+                    {
+                        let mut progress = self.progress.lock().unwrap();
+                        progress.speed_bytes_per_sec = 0;
+                        if progress.status == Status::Downloading {
+                            progress.status = Status::Failed;
+                        }
+                    }
+                    self.status_downloading = false;
+                    self.send_to_engine(ToEngineMessage::Failed).await
+                }
             }
-            Err(_) => self.send_to_engine(ToEngineMessage::Failed).await,
-            Ok(Status::Stopped) => self.send_to_engine(ToEngineMessage::Stopped).await,
-            _ => {}
+            return true;
+        }
+    }
+
+    /// Handles a message received from the engine while a download request is in progress.
+    /// Returns `Some(status)` when the current request must be abandoned.
+    async fn handle_engine_msg_during_download(
+        &mut self,
+        msg: Option<EngineToWorkerMsg>,
+        before_response: bool,
+    ) -> Option<Status> {
+        match msg {
+            Some(EngineToWorkerMsg::Stop) => {
+                self.handle_stop_message();
+                Some(Status::Stopped)
+            }
+            Some(RefreshByteRange(new_range, reuse)) => {
+                worker_log!(self, "Refreshed byte range during download");
+                self.handle_refresh_byte_range_message(new_range, reuse)
+                    .await;
+                if before_response {
+                    // the request has not been answered yet. Restart with the new range.
+                    self.set_reset_status();
+                    Some(Status::Resetting)
+                } else {
+                    None
+                }
+            }
+            Some(EngineToWorkerMsg::Reset) => {
+                self.set_reset_status();
+                Some(Status::Resetting)
+            }
+            Some(EngineToWorkerMsg::Start) => {
+                // Already running. Nothing to do.
+                None
+            }
+            Some(EngineToWorkerMsg::StartReuseWorker(range)) => {
+                worker_log!(self, "StartReuseWorker received during download");
+                let _ = self.flush_buffer();
+                self.byte_range = range;
+                Some(Status::Starting)
+            }
+            Some(EngineToWorkerMsg::Terminate) | None => {
+                worker_log!(self, "Terminate received during download");
+                let _ = self.flush_buffer();
+                self.progress.lock().unwrap().status = Status::Stopped;
+                Some(Status::Complete)
+            }
         }
     }
 
@@ -189,11 +283,8 @@ impl HttpDownloadWorker {
         reuse: bool,
         reset: bool,
     ) -> Result<Status, DownloadError> {
-        //TODO: pass reset to method
         worker_log!(self, "Starting download with range {}", self.byte_range);
-        if self.progress.lock().unwrap().status == Status::Starting
-            || self.check_start_not_allowed(reuse, reset)
-        {
+        if self.check_start_not_allowed(reuse, reset) {
             worker_log!(self, "start not allowed!");
             return Err(DownloadError::InvalidCommand);
         }
@@ -206,108 +297,112 @@ impl HttpDownloadWorker {
             worker_log!(self, "Resetting worker with range {}", self.byte_range);
             self.reset_status();
         }
-        if let Ok(EngineToWorkerMsg::Stop) = self.from_engine_rx.try_recv() {
-            worker_log!(self, "Download cancelled before start");
-            self.progress.lock().unwrap().status = Status::Stopped;
-            return Ok(Status::Stopped);
+        if !self.download_info.supports_range {
+            // The server does not support range requests. Every request starts from byte 0.
+            self.clear_own_temp_files();
+        } else if !reuse && self.is_range_download_complete() {
+            worker_log!(self, "Range {} already fully on disk", self.byte_range);
+            self.set_download_complete();
+            return Ok(RangeComplete);
         }
 
         let mut log_ticker = interval(Duration::from_secs(LOG_BUFFER_SEND_TICKER_SECS));
         let req = self.build_request(reuse)?;
-        tokio::select! {
+        let requested_partial = self.download_info.supports_range;
+        let response = tokio::select! {
             biased;
 
-            Some(msg) = self.from_engine_rx.recv() => {
-                match msg {
-                    EngineToWorkerMsg::Stop => {
-                        self.handle_stop_message();
-                        Ok(Status::Stopped)
-                    }
-                    RefreshByteRange(new_range, reuse) => {
-                        worker_log!(self, "Refreshed byte range in outer");
-                        self.handle_refresh_byte_range_message(new_range, reuse).await;
-                        self.set_reset_status();
-                        Ok(Status::Resetting)
-                    }
-                    EngineToWorkerMsg::Reset => {
-                        self.set_reset_status();
-                        Ok(Status::Resetting)
-                    }
-                    EngineToWorkerMsg::Start => {
-                        /// TODO fix
-                        Ok(Status::Resetting)
-                    },
-                    EngineToWorkerMsg::StartReuseWorker(_) => {
-                        /// TODO fix
-                        worker_log!(self, "StartReuseWorker received in outer");
-                        Ok(Status::Resetting)
-                    }
+            msg = self.from_engine_rx.recv() => {
+                if let Some(status) = self.handle_engine_msg_during_download(msg, true).await {
+                    return Ok(status);
                 }
+                // Messages that don't interrupt the request (e.g. Start) restart the request
+                self.set_reset_status();
+                return Ok(Status::Resetting);
             },
 
-            response = self.client.send(req) => {
-                match response {
-                    Ok(resp) => {
-                        let mut body = resp.into_body();
+            response = self.client.send(req) => response,
+        };
 
-                        loop {
-                            tokio::select! {
-                                biased;
+        let resp = match response {
+            Ok(resp) => resp,
+            Err(e) => {
+                worker_log!(self, "Download error {}", e);
+                return Err(DownloadError::Transport(e.to_string()));
+            }
+        };
+        if requested_partial && resp.status() != hyper::StatusCode::PARTIAL_CONTENT {
+            worker_log!(
+                self,
+                "Server responded with {} instead of 206 for a range request",
+                resp.status()
+            );
+            return Err(DownloadError::Other(format!(
+                "Unexpected status code {} for range request",
+                resp.status()
+            )));
+        }
 
-                                Some(msg) = self.from_engine_rx.recv() => {
-                                    match msg {
-                                        EngineToWorkerMsg::Stop => {
-                                            self.handle_stop_message();
-                                            return Ok(Status::Stopped);
-                                        }
-                                        RefreshByteRange(new_range, reuse) => {
-                                            worker_log!(self, "Refreshed byte range in inner");
-                                            self.handle_refresh_byte_range_message(new_range, reuse).await;
-                                        }
-                                        EngineToWorkerMsg::Reset => {
-                                            self.set_reset_status();
-                                            return Ok(Status::Resetting);
-                                        },
-                                        EngineToWorkerMsg::Start => {
-                                            /// TODO fix
-                                            return Ok(Status::Resetting);
-                                        },
-                                        EngineToWorkerMsg::StartReuseWorker(range) => {
-                                            /// TODO fix
-                                            return Ok(Status::Resetting);
-                                        }
-                                    }
-                                },
+        let mut body = resp.into_body();
+        let mut rate_sleep = Duration::ZERO;
 
-                                frame = body.frame() => {
-                                    match frame {
-                                        Some(Ok(chunk)) => {
-                                            match self.process_chunk(chunk).await {
-                                                Ok(stop) if stop => return Ok(RangeComplete),
-                                                Ok(_) => {}
-                                                Err(_) => return Err(DownloadError::ProcessChunk),
-                                            }
-                                        }
-                                        Some(Err(e)) => {
-                                            return Err(DownloadError::Other(e.to_string()));
-                                        }
-                                        None => {
-                                            worker_log!(self, "inside None");
-                                            return self.handle_download_complete();
-                                        }
-                                    }
-                                },
+        loop {
+            // Apply rate-limiter backpressure BEFORE reading the next frame.
+            // Sleeping here (not inside process_chunk) ensures we don't ask
+            // hyper for more data while we're waiting, so the TCP receive
+            // window fills up and the server actually slows down.
+            if !rate_sleep.is_zero() {
+                tokio::select! {
+                    biased;
+                    msg = self.from_engine_rx.recv() => {
+                        if let Some(status) = self.handle_engine_msg_during_download(msg, false).await {
+                            return Ok(status);
+                        }
+                        // Engine message interrupted the sleep; reset sleep so
+                        // the rate limiter recomputes on next consume call.
+                        rate_sleep = Duration::ZERO;
+                        continue;
+                    }
+                    _ = tokio::time::sleep(rate_sleep) => {
+                        rate_sleep = Duration::ZERO;
+                    }
+                }
+            }
 
-                                _ = log_ticker.tick() => {
-                                    self.send_log_buffer_to_engine().await;
+            tokio::select! {
+                biased;
+
+                msg = self.from_engine_rx.recv() => {
+                    if let Some(status) = self.handle_engine_msg_during_download(msg, false).await {
+                        return Ok(status);
+                    }
+                },
+
+                frame = body.frame() => {
+                    match frame {
+                        Some(Ok(chunk)) => {
+                            match self.process_chunk(chunk).await {
+                                Ok((true, _)) => return Ok(RangeComplete),
+                                Ok((false, wait)) => rate_sleep = wait,
+                                Err(e) => {
+                                    worker_log!(self, "Process chunk error {}", e);
+                                    return Err(DownloadError::ProcessChunk);
                                 }
                             }
                         }
+                        Some(Err(e)) => {
+                            let _ = self.flush_buffer();
+                            return Err(DownloadError::Other(e.to_string()));
+                        }
+                        None => {
+                            worker_log!(self, "Response body ended");
+                            return self.handle_download_complete();
+                        }
                     }
-                    Err(e) => {
-                        worker_log!(self, "Download error {}",e );
-                        Err(DownloadError::Transport(e.to_string()))
-                    }
+                },
+
+                _ = log_ticker.tick() => {
+                    self.send_log_buffer_to_engine().await;
                 }
             }
         }
@@ -322,15 +417,30 @@ impl HttpDownloadWorker {
         self.log_buffer.clear();
     }
 
+    /// Called when the response body has ended. If the server closed the connection before the
+    /// whole range was received, the received bytes are kept and an error is returned so the
+    /// engine can reset the connection and continue from where it left off.
     fn handle_download_complete(&mut self) -> Result<Status, DownloadError> {
-        worker_log!(self, "Download finished.");
-        match self.flush_buffer() {
-            Ok(_) => {
-                self.set_download_complete();
-                Ok(RangeComplete)
-            }
-            Err(_) => Err(DownloadError::ProcessChunk),
+        if self.flush_buffer().is_err() {
+            return Err(DownloadError::ProcessChunk);
         }
+        let expected = if self.download_info.supports_range {
+            self.byte_range.len()
+        } else {
+            self.download_info.file_size
+        };
+        if self.total_request_bytes_received < expected {
+            worker_log!(
+                self,
+                "Response ended prematurely: received {} of {} bytes",
+                self.total_request_bytes_received,
+                expected
+            );
+            return Err(DownloadError::Other("Response ended prematurely".into()));
+        }
+        worker_log!(self, "Download finished.");
+        self.set_download_complete();
+        Ok(RangeComplete)
     }
 
     fn handle_stop_message(&mut self) {
@@ -339,7 +449,10 @@ impl HttpDownloadWorker {
             "Cancel message received from engine. Exiting download..."
         );
         let _ = self.flush_buffer();
-        self.progress.lock().unwrap().status = Status::Stopped;
+        let mut progress = self.progress.lock().unwrap();
+        progress.status = Status::Stopped;
+        progress.speed_bytes_per_sec = 0;
+        drop(progress);
         self.status_downloading = false;
     }
 
@@ -358,9 +471,10 @@ impl HttpDownloadWorker {
     }
 
     fn check_start_not_allowed(&mut self, reuse: bool, reset: bool) -> bool {
-        if self.byte_range.start >= self.byte_range.end
-            || self.byte_range.start > self.download_info.file_size
-            || self.byte_range.end > self.download_info.file_size
+        // Byte ranges are inclusive, therefore the last valid byte is file_size - 1
+        if self.byte_range.start > self.byte_range.end
+            || self.byte_range.start >= self.download_info.file_size
+            || self.byte_range.end >= self.download_info.file_size
         {
             worker_log!(
                 self,
@@ -370,45 +484,42 @@ impl HttpDownloadWorker {
             );
             return true;
         }
-        let status = &self.progress.lock().unwrap().status;
-        if reuse {
+        if reuse || reset {
             return false;
         }
+        let status = self.progress.lock().unwrap().status;
+        matches!(status, Status::Downloading | Status::Connecting)
+    }
 
-        if reset {
-            if let Status::RangeComplete = status {
-                worker_log!(self, "Range complete.... skipping start");
-                return true;
-            }
-            let files = self.temp_files_sorted(true);
-            if let Some(last_file) = files.last() {
-                if last_file.end_byte == self.byte_range.end
-                    || (self.byte_range.end == self.download_info.file_size
-                        && last_file.end_byte == self.download_info.file_size - 1)
-                {
-                    worker_log!(self, "last file compelte... skipping start");
-                    return true;
-                }
-            }
+    /// Checks whether the temp files of this worker fully cover its assigned byte range.
+    fn is_range_download_complete(&mut self) -> bool {
+        let files = self.temp_files_sorted(true);
+        let (Some(first), Some(last)) = (files.first(), files.last()) else {
+            return false;
+        };
+        if first.start_byte > self.byte_range.start || last.end_byte < self.byte_range.end {
+            return false;
         }
-
-        // On a plain Start (pause/resume), skip if the assigned range is already fully on disk.
-        // Completed workers sit in the reuse queue with status=Stopped (pause reset it from
-        // RangeComplete), so we must check the temp files rather than relying on status alone.
-        if !reset {
-            let files = self.temp_files_sorted(true);
-            if let Some(last_file) = files.last() {
-                if last_file.end_byte >= self.byte_range.end {
-                    worker_log!(self, "Range already fully on disk, skipping start");
-                    return true;
-                }
+        let mut next_expected = self.byte_range.start;
+        for file in &files {
+            if file.start_byte > next_expected {
+                worker_log!(self, "Found gap before temp file {}", file.name);
+                return false;
             }
+            next_expected = next_expected.max(file.end_byte + 1);
         }
+        next_expected > self.byte_range.end
+    }
 
-        matches!(
-            status,
-            Status::Downloading | Status::Connecting | Status::Starting
-        ) && !reset
+    /// Deletes all the temp files of this worker. Used for servers that don't support range
+    /// requests, where every new request starts from the beginning of the file.
+    fn clear_own_temp_files(&mut self) {
+        for file in self.cached_temp_files.drain(..) {
+            let _ = remove_file(&file.path);
+        }
+        self.total_bytes_received = 0;
+        self.total_request_bytes_received = 0;
+        self.prev_buffer_end_byte = 0;
     }
 
     async fn init(&mut self) -> anyhow::Result<()> {
@@ -448,16 +559,15 @@ impl HttpDownloadWorker {
             };
         }
         if self.byte_range.start + self.total_request_bytes_received >= new_range.end {
-            let split_byte = (self.byte_range.end
-                - (self.byte_range.start + self.total_request_bytes_received))
-                / 2;
-            let new_end = split_byte + self.byte_range.start + self.total_request_bytes_received;
-            let new_valid_end = prev_end_byte;
-            let new_valid_start = self.byte_range.start;
+            let received_end = self.byte_range.start + self.total_request_bytes_received;
+            let split_byte = (self.byte_range.end - received_end) / 2;
+            let new_end = split_byte + received_end;
+            // The length of the range that will be handed to the other worker
+            let new_valid_len = prev_end_byte.saturating_sub(new_end);
 
-            return if new_end > 0
+            return if split_byte > 0
                 && new_range.start < new_end
-                && new_valid_start + MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN < new_valid_end
+                && new_valid_len > MINIMUM_DOWNLOADABLE_BYTE_RANGE_LEN
             {
                 self.byte_range = ByteRange::new(new_range.start, new_end);
                 worker_log!(
@@ -502,42 +612,74 @@ impl HttpDownloadWorker {
     /// Adds the received bytes to the buffer and flushes to disk periodically.
     /// Returns true if the byte range has been downloaded and should terminate the connection.
     /// TODO: Gracefully handle poisoned locks to send panic to the engine and recover
-    async fn process_chunk(&mut self, data: Frame<Bytes>) -> anyhow::Result<bool> {
+    async fn process_chunk(&mut self, data: Frame<Bytes>) -> anyhow::Result<(bool, Duration)> {
+        let Some(chunk) = data.data_ref().cloned() else {
+            // trailers or other non-data frames
+            return Ok((false, Duration::ZERO));
+        };
+        if chunk.is_empty() {
+            return Ok((false, Duration::ZERO));
+        }
         if !self.status_downloading {
             self.progress.lock_anyhow()?.status = Status::Downloading;
             self.status_downloading = true;
             self.send_to_engine(ToEngineMessage::ConnectionSuccess)
                 .await;
         }
-        let chunk = data.data_ref().unwrap().clone();
+        let expected_len = if self.download_info.supports_range {
+            self.byte_range.len()
+        } else {
+            self.download_info.file_size
+        };
+        let remaining = expected_len.saturating_sub(self.total_request_bytes_received);
+        if remaining == 0 {
+            worker_log!(self, "Dropping chunk received after range boundary");
+            self.flush_buffer()?;
+            self.terminated_on_completion = true;
+            self.set_download_complete();
+            return Ok((true, Duration::ZERO));
+        }
+        // Never accept bytes beyond the assigned range. The range may have been shrunk by a
+        // refresh, or the server may send more than requested.
+        let exceeded = chunk.len() as u64 > remaining;
+        let chunk = if exceeded {
+            chunk.slice(0..remaining as usize)
+        } else {
+            chunk
+        };
         let chunk_size = chunk.len() as u64;
         self.update_received_bytes(chunk_size);
         self.calculate_speed(chunk_size);
         self.data_buffer.push(chunk);
         self.calculate_flush_threshold();
         self.update_download_progress();
-        if self.download_exceeded_end_byte() {
+        if exceeded || self.download_match_end_byte() {
             worker_log!(
                 self,
-                "Exceeded end byte: Current range: {}-{}, total_req: {}",
+                "Range end reached (exceeded: {}): Current range: {}-{}, total_req: {}",
+                exceeded,
                 self.byte_range.start,
                 self.byte_range.end,
                 self.total_request_bytes_received
             );
             self.flush_buffer()?;
-            self.cut_temp_files().await?;
+            if self.download_info.supports_range {
+                // Safety net: remove any temp bytes past the (possibly refreshed) end byte
+                self.cut_temp_files().await?;
+            }
             self.terminated_on_completion = true;
             self.set_download_complete();
-            return Ok(true);
-        }
-        if self.download_match_end_byte() {
-            worker_log!(self, "Matched endbyte. not doing anything");
+            return Ok((true, Duration::ZERO));
         }
         if self.temp_bytes_received > self.buffer_flush_threshold {
             self.flush_buffer()?;
-            self.set_download_complete();
         }
-        Ok(false)
+        let wait = self
+            .rate_limiter
+            .as_ref()
+            .map(|l| l.lock().unwrap().consume(chunk_size))
+            .unwrap_or(Duration::ZERO);
+        Ok((false, wait))
     }
 
     /// Cuts the excess bytes from the downloaded temp files.
@@ -576,7 +718,7 @@ impl HttpDownloadWorker {
         }
 
         for to_delete_meta in &to_delete {
-            self.total_bytes_received -= to_delete_meta.size;
+            self.total_bytes_received = self.total_bytes_received.saturating_sub(to_delete_meta.size);
             remove_file(&to_delete_meta.path)?;
             let pos = self
                 .cached_temp_files
@@ -612,8 +754,12 @@ impl HttpDownloadWorker {
             self.cached_temp_files.push(file_meta);
             self.total_bytes_received += buf_to_write.len() as u64;
         }
-        self.progress.lock_anyhow()?.total_download_progress =
-            self.total_bytes_received as f64 / self.download_info.file_size as f64;
+        {
+            let mut progress = self.progress.lock_anyhow()?;
+            progress.total_download_progress =
+                self.total_bytes_received as f64 / self.download_info.file_size as f64;
+            progress.total_bytes_received = self.total_bytes_received;
+        }
 
         worker_log!(self, "Temp file fix complete");
         Ok(())
@@ -640,8 +786,8 @@ impl HttpDownloadWorker {
             return;
         }
 
-        let speed_mb = (total_len as f64 / 1048576.0) / elapsed_sec;
-        let speed_kb = (total_len as f64 / 1024.0) / elapsed_sec;
+        let speed_mb = (total_len as f64 / 1_000_000.0) / elapsed_sec;
+        let speed_kb = (total_len as f64 / 1000.0) / elapsed_sec;
         let speed_b = total_len as f64 / elapsed_sec;
 
         if speed_mb > 1.0 {
@@ -667,16 +813,11 @@ impl HttpDownloadWorker {
 
     fn update_download_progress(&self) {
         let mut progress = self.progress.lock().unwrap();
-        progress.worker_download_progress =
-            self.total_request_bytes_received as f64 / self.byte_range.len() as f64;
+        progress.worker_download_progress = (self.total_request_bytes_received as f64
+            / self.byte_range.len() as f64)
+            .min(1.0);
         progress.total_download_progress =
             self.total_bytes_received as f64 / self.download_info.file_size as f64;
-        if progress.worker_download_progress > 1.0 {
-            let excess_bytes = self.total_request_bytes_received - self.byte_range.len();
-            progress.total_download_progress = (self.total_bytes_received as f64
-                - excess_bytes as f64)
-                / self.download_info.file_size as f64;
-        }
         progress.total_bytes_received = self.total_bytes_received;
         progress.last_response_time = now_millis();
     }
@@ -698,9 +839,15 @@ impl HttpDownloadWorker {
             file.write_all(chunk)?;
             temp_file_len += chunk.len() as u64;
         }
-        // if tempFileStartByte > downloadItem.fileSize {
-        //     _sendEnginePanic();
-        // }
+        if self.temp_file_start_byte() >= self.download_info.file_size {
+            worker_log!(
+                self,
+                "Temp file starts beyond content length: {} range {} total_req {}",
+                temp_file_name,
+                self.byte_range,
+                self.total_request_bytes_received
+            );
+        }
         let file_meta = TempFileMetadata {
             name: temp_file_name,
             start_byte: self.temp_file_start_byte(),
@@ -743,13 +890,15 @@ impl HttpDownloadWorker {
 
     /// Adds the temp files downloaded by this worker to its cache.
     fn init_temp_files_cache(&mut self) {
-        if self.cached_temp_files.is_empty() || !self.temp_directory().exists() {
+        if !self.cached_temp_files.is_empty() || !self.temp_directory().exists() {
             return;
         }
-        let files = list_files_in_dir(self.temp_directory()).unwrap();
+        let Ok(files) = list_files_in_dir(self.temp_directory()) else {
+            return;
+        };
         self.cached_temp_files = files
             .iter()
-            .map(TempFileMetadata::from_path_buf)
+            .filter_map(TempFileMetadata::from_path_buf)
             .filter(|f| f.worker_number == self.worker_number)
             .collect();
     }
@@ -778,13 +927,23 @@ impl HttpDownloadWorker {
     pub fn build_request(&mut self, reuse: bool) -> Result<Request<Empty<Bytes>>, http::Error> {
         let url = self.download_info.url.clone();
         let request_range = self.resolve_range(reuse);
-        let range_header = request_range.to_header();
-        let req = Request::builder()
-            .method("GET")
-            .uri(url)
-            .header("User-Agent", "rust-hyper/1.0") // TODO: proper user agent
-            .header(range_header.0, range_header.1)
-            .body(Empty::<Bytes>::new())?;
+        let mut builder = Request::builder().method("GET").uri(url);
+        let has_user_agent = self
+            .download_info
+            .headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("user-agent"));
+        if !has_user_agent {
+            builder = builder.header("User-Agent", USER_AGENT);
+        }
+        for (key, value) in &self.download_info.headers {
+            builder = builder.header(key, value);
+        }
+        if self.download_info.supports_range {
+            let range_header = request_range.to_header();
+            builder = builder.header(range_header.0, range_header.1);
+        }
+        let req = builder.body(Empty::<Bytes>::new())?;
 
         let total_existing_len = self.total_written_bytes(false);
         let total_req_received_bytes = self.total_written_bytes(true);
@@ -821,12 +980,15 @@ impl HttpDownloadWorker {
         self.reset_data_buffer();
     }
 
-    fn download_exceeded_end_byte(&self) -> bool {
-        self.byte_range.start + self.total_request_bytes_received + 1 > self.byte_range.end
-    }
-
+    /// Byte ranges are inclusive. A range is complete when exactly `range.len()` bytes
+    /// have been received.
     fn download_match_end_byte(&self) -> bool {
-        self.byte_range.start + self.total_request_bytes_received + 1 == self.byte_range.end
+        let expected = if self.download_info.supports_range {
+            self.byte_range.len()
+        } else {
+            self.download_info.file_size
+        };
+        self.total_request_bytes_received == expected
     }
 
     fn temp_directory(&self) -> PathBuf {
@@ -847,14 +1009,14 @@ impl HttpDownloadWorker {
     }
 
     fn set_download_complete(&mut self) {
+        let total_bytes = self.total_written_bytes(false);
+        self.total_bytes_received = total_bytes;
+        self.status_downloading = false;
         let mut progress = self.progress.lock().unwrap();
         progress.status = Status::RangeComplete;
-        drop(progress);
-
-        let mut progress = self.progress.lock().unwrap();
         progress.worker_download_progress = 1f64;
-        let total_bytes = self.total_written_bytes(false);
-        self.status_downloading = false;
+        progress.speed_bytes_per_sec = 0;
+        progress.total_bytes_received = total_bytes;
         progress.total_download_progress = total_bytes as f64 / self.download_info.file_size as f64;
     }
 
@@ -893,7 +1055,7 @@ async fn increment_retry_and_wait(retry_count: &mut u32, retry_backoff: &mut u32
 /// Starting: The download is starting
 /// Connecting: Connecting to server (no data has been received yet)
 /// Failed: Download has failed
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum Status {
     Initial,
     Stopped,

@@ -4,7 +4,7 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-static VERSIONED_FILENAME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r".+_\d+").unwrap());
+static VERSIONED_FILENAME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+_\d+$").unwrap());
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct TempFileMetadata {
@@ -17,26 +17,25 @@ pub struct TempFileMetadata {
 }
 
 impl TempFileMetadata {
+    /// Returns true if the temp file's byte range overlaps with the given (inclusive) range.
     pub fn is_in_range(&self, range: ByteRange) -> bool {
-        (self.start_byte >= range.start
-            && self.start_byte < range.end
-            && self.end_byte <= range.end
-            && self.end_byte > range.start)
-            || (self.start_byte < range.end && self.end_byte > range.end)
+        self.start_byte <= range.end && self.end_byte >= range.start
     }
 
-    pub fn from_path_buf(path: &PathBuf) -> TempFileMetadata {
-        let meta = fs::metadata(path).unwrap();
-        let name = path.file_name().unwrap().to_str().unwrap();
-        let (worker_number, start_byte, end_byte) = extract_worker_and_range(name).unwrap();
-        TempFileMetadata {
+    /// Parses the temp file metadata from its path. Returns `None` for files that do not follow
+    /// the `worker#start-end` naming scheme.
+    pub fn from_path_buf(path: &PathBuf) -> Option<TempFileMetadata> {
+        let meta = fs::metadata(path).ok()?;
+        let name = path.file_name()?.to_str()?;
+        let (worker_number, start_byte, end_byte) = extract_worker_and_range(name)?;
+        Some(TempFileMetadata {
             worker_number,
             start_byte,
             end_byte,
             name: name.to_string(),
             path: path.clone(),
             size: meta.len(),
-        }
+        })
     }
 }
 
@@ -60,9 +59,13 @@ pub fn list_temp_files_sorted<P: AsRef<Path>>(dir: P) -> io::Result<Vec<TempFile
     let files = list_files_in_dir(dir)?;
     let mut files_sorted = files
         .iter()
-        .map(|f| TempFileMetadata::from_path_buf(f))
+        .filter_map(TempFileMetadata::from_path_buf)
         .collect::<Vec<TempFileMetadata>>();
-    files_sorted.sort_by(|a, b| a.start_byte.cmp(&b.start_byte));
+    files_sorted.sort_by(|a, b| {
+        a.start_byte
+            .cmp(&b.start_byte)
+            .then(a.end_byte.cmp(&b.end_byte))
+    });
     Ok(files_sorted)
 }
 pub fn list_files_in_dir<P: AsRef<Path>>(dir: P) -> io::Result<Vec<PathBuf>> {
@@ -84,18 +87,29 @@ pub fn resolve_versioned_file_path<S: AsRef<str>, P: AsRef<Path>>(
     if !dir.as_ref().exists() {
         fs::create_dir_all(&dir)?;
     }
-    let mut file = dir.as_ref().join(filename.as_ref());
-    let extension = file.extension().map(|e| e.to_string_lossy().into_owned());
+    let original = dir.as_ref().join(filename.as_ref());
+    let extension = original
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned());
+    let mut raw_name = original
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| filename.as_ref().to_string());
+    if VERSIONED_FILENAME_REGEX.is_match(&raw_name) {
+        if let Some(idx) = raw_name.rfind('_') {
+            raw_name.truncate(idx);
+        }
+    }
+    let mut file = original;
     let mut version = 1;
     while file.exists() {
-        let mut raw_name = file.file_stem().unwrap().to_string_lossy().into_owned();
-        if VERSIONED_FILENAME_REGEX.is_match(&raw_name) {
-            raw_name = raw_name[..raw_name.rfind('_').unwrap()].to_string();
-        }
         version += 1;
-        let filename = format!("{}_{}.{}", raw_name, version, extension.clone().unwrap());
-        file = dir.as_ref().join(&filename);
+        let versioned = match &extension {
+            Some(ext) => format!("{}_{}.{}", raw_name, version, ext),
+            None => format!("{}_{}", raw_name, version),
+        };
+        file = dir.as_ref().join(versioned);
     }
 
-    Ok(dir.as_ref().join(filename.as_ref()))
+    Ok(file)
 }

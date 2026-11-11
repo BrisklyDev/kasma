@@ -16,6 +16,12 @@ pub struct DownloadSetting {
     pub base_save_dir: PathBuf,
     pub base_temp_dir: PathBuf,
     pub logger_enabled: bool,
+    /// Total download speed cap across all connections, in bytes per second.
+    /// `None` means unlimited.
+    pub speed_limit_bytes_per_sec: Option<u64>,
+    /// Maximum number of consecutive connection retries for a worker before the download is
+    /// terminated with a network error. `None` means unlimited retries.
+    pub max_connection_retry_count: Option<u32>,
 }
 
 impl DownloadSetting {
@@ -33,6 +39,8 @@ pub struct DownloadSettingBuilder {
     base_temp_dir: Option<PathBuf>,
     reset_timeout_millis: Option<u64>,
     logger: Option<bool>,
+    speed_limit_bytes_per_sec: Option<u64>,
+    max_connection_retry_count: Option<Option<u32>>,
 }
 
 impl DownloadSettingBuilder {
@@ -71,15 +79,28 @@ impl DownloadSettingBuilder {
         self
     }
 
+    pub fn speed_limit_bytes_per_sec(mut self, limit: u64) -> Self {
+        self.speed_limit_bytes_per_sec = Some(limit);
+        self
+    }
+
+    /// Sets the maximum number of consecutive retries per connection. `None` = unlimited.
+    pub fn max_connection_retry_count(mut self, count: Option<u32>) -> Self {
+        self.max_connection_retry_count = Some(count);
+        self
+    }
+
     pub fn build(self) -> DownloadSetting {
         DownloadSetting {
             proxy: self.proxy,
             progress_polling_frequency_millis: self.progress_polling_milliseconds.unwrap_or(200),
-            total_connections: self.total_connections.unwrap_or(8),
+            total_connections: self.total_connections.unwrap_or(8).max(1),
             base_save_dir: self.base_save_dir.unwrap_or(PathBuf::from("./downloads")),
             base_temp_dir: self.base_temp_dir.unwrap_or(PathBuf::from("./temp")),
             reset_timeout_millis: self.reset_timeout_millis.unwrap_or(60_000),
             logger_enabled: self.logger.unwrap_or(false),
+            speed_limit_bytes_per_sec: self.speed_limit_bytes_per_sec,
+            max_connection_retry_count: self.max_connection_retry_count.unwrap_or(Some(10)),
         }
     }
 }

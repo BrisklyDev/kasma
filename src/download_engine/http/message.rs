@@ -1,8 +1,13 @@
-use crate::download_engine::http::{byte_range::ByteRange, progress::DownloadProgress};
+use crate::download_engine::http::byte_range::ByteRange;
+use crate::download_engine::http::http_download_worker::Status;
+use std::path::PathBuf;
 
 pub enum DownloadCommand {
     Pause,
     Start,
+    /// Stops all workers (flushing their buffers to disk) and terminates the engine.
+    /// The download can be resumed later by starting a new engine for the same download.
+    Terminate,
 }
 
 pub struct ButtonAvailability {
@@ -18,12 +23,43 @@ pub enum EngineToWorkerMsg {
     // args: new byte range, reuse
     RefreshByteRange(ByteRange, bool),
     StartReuseWorker(ByteRange),
+    /// Exits the worker's event loop and ends its thread.
+    Terminate,
+}
+
+/// A snapshot of the overall download progress sent to the main thread.
+#[derive(Debug, Clone)]
+pub struct ProgressReport {
+    /// Overall progress in the range of 0.0..=1.0
+    pub progress: f64,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub speed_bytes_per_sec: u64,
+    pub estimated_remaining_sec: u64,
+    pub estimated_remaining: String,
+    pub status: Status,
+    pub active_workers: usize,
 }
 
 pub enum EngineToMainMsg {
     Uid(String),
-    Progress(f64),
-    Complete,
+    /// Sent once the file information has been fetched and the download is about to start.
+    Info {
+        file_name: String,
+        file_size: u64,
+        supports_range: bool,
+    },
+    Progress(ProgressReport),
+    Paused,
+    Resumed,
+    /// The temp files are being assembled into the final file
+    Assembling,
+    /// The download has been completed and the file has been written to the given path.
+    Complete(PathBuf),
+    /// The download has failed and the engine has terminated.
+    Failed(String),
+    /// The engine was terminated by a [`DownloadCommand::Terminate`] command.
+    Terminated,
 }
 
 #[derive(Debug)]

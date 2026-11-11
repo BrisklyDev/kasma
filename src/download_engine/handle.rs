@@ -1,13 +1,10 @@
 use crate::download_engine::http::http_download_engine::HttpDownloadEngine;
 use crate::download_engine::http::message::{DownloadCommand, EngineToMainMsg};
-use crate::download_engine::http::progress::DownloadProgress;
 use crate::download_engine::setting::DownloadSetting;
 use crate::download_engine::{DownloadInfo, RunnableTask};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 pub struct DownloadHandle {
     pub tx: mpsc::Sender<DownloadCommand>,
@@ -24,19 +21,43 @@ impl DownloadHandle {
         let _ = self.tx.send(DownloadCommand::Start).await;
     }
 
+    /// Stops the download, keeping the temp files so that it can be resumed later.
+    pub async fn terminate(&self) {
+        let _ = self.tx.send(DownloadCommand::Terminate).await;
+    }
+
     pub async fn next_event(&mut self) -> Option<EngineToMainMsg> {
         self.rx.recv().await
     }
 }
 
 pub fn spawn_http_engine(setting: DownloadSetting, info: DownloadInfo) -> DownloadHandle {
-    let (engine_to_main_tx, engine_to_main_rx) = tokio::sync::mpsc::channel::<EngineToMainMsg>(100);
-    let (main_to_engine_tx, main_to_engine_rx) = tokio::sync::mpsc::channel::<DownloadCommand>(100);
-    let handle = thread::spawn(move || {
-        HttpDownloadEngine::new(main_to_engine_rx, engine_to_main_tx, info, setting, None)
+    spawn_http_engine_with_name(setting, info, None)
+}
+
+/// Spawns the engine on its own thread. `output_file_name` overrides the name of the
+/// downloaded file.
+pub fn spawn_http_engine_with_name(
+    setting: DownloadSetting,
+    info: DownloadInfo,
+    output_file_name: Option<String>,
+) -> DownloadHandle {
+    let (engine_to_main_tx, engine_to_main_rx) = mpsc::channel::<EngineToMainMsg>(100);
+    let (main_to_engine_tx, main_to_engine_rx) = mpsc::channel::<DownloadCommand>(100);
+    let handle = thread::Builder::new()
+        .name("kasma-engine".to_string())
+        .spawn(move || {
+            HttpDownloadEngine::new(
+                main_to_engine_rx,
+                engine_to_main_tx,
+                info,
+                setting,
+                output_file_name,
+            )
             .0
             .run();
-    });
+        })
+        .expect("Failed to spawn engine thread");
     DownloadHandle {
         tx: main_to_engine_tx,
         rx: engine_to_main_rx,

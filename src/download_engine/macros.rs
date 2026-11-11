@@ -10,7 +10,6 @@ macro_rules! engine_warn {
             format!($($arg)*)
         ));
         $self.log_buffer.push('\n');
-        println!($($arg)*);
         return Ok(());
     }};
 }
@@ -33,7 +32,6 @@ macro_rules! engine_log {
             format!($($arg)*)
         ));
         $self.log_buffer.push('\n');
-        println!($($arg)*);
     }};
 }
 
@@ -47,6 +45,5 @@ macro_rules! worker_log {
             format!($($arg)*)
         ));
         $self.log_buffer.push('\n');
-        println!($($arg)*);
     }};
 }

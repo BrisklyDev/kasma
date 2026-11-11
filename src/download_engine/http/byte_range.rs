@@ -19,12 +19,18 @@ impl ByteRange {
         ByteRange { start: 0, end: 0 }
     }
 
+    /// Returns true if `self` is fully contained within `other`.
     pub fn is_in_range_of(&self, other: &ByteRange) -> bool {
-        self.start >= other.end && self.start <= other.end
+        self.start >= other.start && self.end <= other.end
     }
 
     pub fn overlaps_with(&self, other: &ByteRange) -> bool {
         self.start <= other.start && self.end >= other.start
+    }
+
+    /// Symmetric overlap check. Both ranges are inclusive.
+    pub fn overlaps(&self, other: &ByteRange) -> bool {
+        self.start <= other.end && other.start <= self.end
     }
 
     pub fn is_valid(&self) -> bool {

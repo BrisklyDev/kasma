@@ -31,6 +31,8 @@ pub struct DownloadProgress {
     pub workers_progress: Vec<WorkerProgress>,
     pub estimated_remaining: String,
     pub estimated_remaining_sec: u64,
+    /// The path of the assembled file once the download is complete
+    pub output_path: Option<std::path::PathBuf>,
 }
 
 impl DownloadProgress {
@@ -43,6 +45,7 @@ impl DownloadProgress {
             estimated_remaining: "".to_string(),
             estimated_remaining_sec: 0,
             workers_progress: vec![],
+            output_path: None,
         }
     }
 }

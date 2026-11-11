@@ -12,7 +12,7 @@ type WeakNodeRef = Weak<RefCell<ByteRangeNode>>;
 /// A tree implementation of byte ranges. Used for dynamic segmentation
 /// of the download byte ranges associated with their designated connections.
 /// When a download initially begins, it is started with one root node with
-/// startByte = 0 and endByte = contentLength. As the engine adds new connections,
+/// startByte = 0 and endByte = contentLength - 1 (inclusive). As the engine adds new connections,
 /// the tree is further broken down into smaller segments, each associated with
 /// a download connection.
 ///
@@ -52,19 +52,27 @@ impl ByteRangeTree {
     ///             └── [300-600000] (status: Outdated, worker: 0)
     ///                 ├── [300-600] (status: ToDownload, worker: 1)
     ///                 └── [601-600000] (status: Complete, worker: 0)
+    /// `total_size` is a byte count while every `ByteRange` end is an inclusive byte index,
+    /// therefore the last valid byte is always `total_size - 1`.
     pub fn from_missing_bytes(
         total_size: u64,
         max_worker_count: u8,
         missing_ranges: Vec<ByteRange>,
     ) -> Self {
-        let full_range = ByteRange::new(0, total_size);
+        let final_end = total_size.saturating_sub(1);
+        let full_range = ByteRange::new(0, final_end);
         let root = ByteRangeNode::new(None, full_range, ByteRangeStatus::ToDownload, 0);
         let mut tree = Self::new(root);
+        let missing_ranges: Vec<ByteRange> = missing_ranges
+            .into_iter()
+            .map(|r| ByteRange::new(r.start, r.end.min(final_end)))
+            .filter(|r| r.start <= final_end && r.end >= r.start)
+            .collect();
+        if missing_ranges.is_empty() {
+            return tree;
+        }
         let first_range = missing_ranges[0].clone();
-        if missing_ranges.len() == 1
-            && first_range.start == 0
-            && (first_range.end == total_size - 1 || first_range.end == total_size)
-        {
+        if missing_ranges.len() == 1 && first_range.start == 0 && first_range.end == final_end {
             return tree;
         }
         let mut root_ref = tree.root.borrow_mut();
@@ -87,7 +95,7 @@ impl ByteRangeTree {
         root_ref.worker_number = 0;
         let right_child_start = root_ref.left_child.as_ref().unwrap().borrow().range.end + 1;
         root_ref.create_right_child(
-            ByteRange::new(right_child_start, total_size),
+            ByteRange::new(right_child_start, final_end),
             ByteRangeStatus::Outdated,
             1,
         );
@@ -116,13 +124,14 @@ impl ByteRangeTree {
             missing_ranges_clone.remove(0);
         }
         let mut iteration_root = root_ref.right_child.clone().unwrap();
-        let mut current_max_worker_num: i8 = -1;
+        // If the first missing range starts at 0, worker 0 has already been assigned to it.
+        let mut current_max_worker_num: i16 = if first_range.start == 0 { 0 } else { -1 };
         while !missing_ranges_clone.is_empty() {
             let current_missing = missing_ranges_clone[0].clone();
             let mut exceeded_max_worker_num = false;
             let mut iteration_root_ref = iteration_root.borrow_mut();
             if iteration_root_ref.range.start == current_missing.start {
-                if current_max_worker_num + 1 > (max_worker_count - 1) as i8 {
+                if current_max_worker_num + 1 > max_worker_count as i16 - 1 {
                     exceeded_max_worker_num = true;
                 } else {
                     current_max_worker_num += 1;
@@ -167,7 +176,7 @@ impl ByteRangeTree {
                     .end
                     + 1;
                 iteration_root_ref.create_right_child(
-                    ByteRange::new(new_start, total_size),
+                    ByteRange::new(new_start, final_end),
                     status,
                     0,
                 );
@@ -207,7 +216,7 @@ impl ByteRangeTree {
                     .unwrap()
                     .borrow_mut();
                 right_child_ref.status = ByteRangeStatus::Complete;
-                if right_child_ref.range.start >= total_size {
+                if right_child_ref.range.start > final_end {
                     let idx = {
                         let r_child_range = right_child_ref.range.clone();
                         drop(right_child_ref);
@@ -246,14 +255,15 @@ impl ByteRangeTree {
             .cloned()
             .collect();
 
-        if initial_nodes.len() == max_worker_count as usize {
-            return tree;
-        }
         let mut worker_num = initial_nodes
             .iter()
-            .max_by_key(|node| node.borrow().worker_number)
             .map(|node| node.borrow().worker_number)
-            .unwrap();
+            .max()
+            .unwrap_or(0);
+        tree.max_worker_number = worker_num;
+        if initial_nodes.is_empty() || initial_nodes.len() >= max_worker_count as usize {
+            return tree;
+        }
 
         'outer: while worker_num <= max_worker_count {
             initial_nodes = tree
@@ -270,6 +280,9 @@ impl ByteRangeTree {
                 if result.is_err() {
                     break 'outer;
                 }
+                if !result.unwrap() {
+                    break 'outer;
+                }
                 worker_num += 1;
                 node.borrow_mut()
                     .right_child
@@ -279,7 +292,12 @@ impl ByteRangeTree {
                     .worker_number = worker_num;
             }
         }
+        tree.max_worker_number = worker_num;
         tree
+    }
+
+    pub fn max_worker_number(&self) -> u8 {
+        self.max_worker_number
     }
 
     pub fn split_byte_range_node(
@@ -288,6 +306,25 @@ impl ByteRangeTree {
         set_worker_num: bool,
     ) -> Result<bool, String> {
         let node_range = node.borrow().range.clone();
+        {
+            let n = node.borrow();
+            if n.left_child.is_some() || n.right_child.is_some() {
+                return Err(format!("Node {} is not a leaf node", node_range));
+            }
+        }
+        let node_idx = self
+            .lowest_level_nodes
+            .iter()
+            .position(|x| Rc::ptr_eq(x, node) || x.borrow().range == node_range);
+        let Some(index) = node_idx else {
+            return Err(format!(
+                "Failed to find leaf node index for {}",
+                node_range
+            ));
+        };
+        if node_range.end <= node_range.start {
+            return Err("Split byte is zero".to_string());
+        }
         let split_byte = (node_range.end - node_range.start) / 2;
         if split_byte == 0 {
             return Err("Split byte is zero".to_string());
@@ -318,6 +355,8 @@ impl ByteRangeTree {
         };
 
         let mut node_ref = node.borrow_mut();
+        let previous_left_neighbor = node_ref.left_neighbor.clone();
+        let previous_right_neighbor = node_ref.right_neighbor.clone();
         node_ref.right_child = Some(ByteRangeNode::new(
             Some(Rc::downgrade(&node)),
             range_right,
@@ -334,31 +373,23 @@ impl ByteRangeTree {
         {
             let mut left_child_ref = node_ref.left_child.as_ref().unwrap().borrow_mut();
             let mut right_child_ref = node_ref.right_child.as_ref().unwrap().borrow_mut();
+            left_child_ref.left_neighbor = previous_left_neighbor.clone();
             left_child_ref.right_neighbor = node_ref.right_child.clone();
             right_child_ref.left_neighbor = node_ref.left_child.clone();
+            right_child_ref.right_neighbor = previous_right_neighbor.clone();
             left_child_ref.worker_number = node_ref.worker_number;
             if set_worker_num {
                 self.max_worker_number += 1;
                 right_child_ref.worker_number = self.max_worker_number;
             }
         }
-
-        let node_idx = {
-            let range = node_ref.range.clone();
-            drop(node_ref);
-            let idx = self
-                .lowest_level_nodes
-                .iter()
-                .position(|x| x.borrow().range == range);
-            node_ref = node.borrow_mut();
-            idx
-        };
-
-        if node_idx.is_none() {
-            return Err("Failed to find node index".to_string());
+        if let Some(prev_left) = previous_left_neighbor {
+            prev_left.borrow_mut().right_neighbor = node_ref.left_child.clone();
+        }
+        if let Some(prev_right) = previous_right_neighbor {
+            prev_right.borrow_mut().left_neighbor = node_ref.right_child.clone();
         }
 
-        let index = node_idx.unwrap();
         self.lowest_level_nodes.remove(index);
         self.lowest_level_nodes
             .insert(index, node_ref.left_child.as_ref().unwrap().clone());
@@ -367,62 +398,37 @@ impl ByteRangeTree {
         Ok(true)
     }
 
-    pub fn split(&mut self) -> Result<(), String> {
-        // find leftmost leaf
-        let mut node = {
-            let mut cursor = Rc::clone(&self.root);
-            loop {
-                let left_opt = cursor.borrow().left_child.clone();
-                match left_opt {
-                    Some(left) => cursor = left,
-                    None => break cursor,
+    /// Splits the non-complete lowest level nodes into new byte ranges, creating at most
+    /// `max_splits` new nodes. Returns the left children of the nodes that were split. The left
+    /// child of each split node keeps the worker number of its parent (the worker that has to
+    /// refresh its byte range) while the right child is assigned a new worker number.
+    pub fn split(&mut self, max_splits: usize) -> Vec<NodeRef> {
+        let mut split_nodes = vec![];
+        if max_splits == 0 {
+            return split_nodes;
+        }
+        let nodes_to_split: Vec<NodeRef> = self
+            .lowest_level_nodes
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.borrow().status,
+                    ByteRangeStatus::Downloading | ByteRangeStatus::ToDownload
+                )
+            })
+            .cloned()
+            .collect();
+        for node in nodes_to_split {
+            if split_nodes.len() >= max_splits {
+                break;
+            }
+            if let Ok(true) = self.split_byte_range_node(&node, true) {
+                if let Some(left) = node.borrow().left_child.clone() {
+                    split_nodes.push(left);
                 }
             }
-        };
-
-        let success = self.split_byte_range_node(&node, true)?;
-        if !success {
-            return Err("Node was not split!".to_string());
         }
-
-        if Rc::ptr_eq(&node, &self.root) {
-            return Ok(());
-        }
-
-        let mut current_neighbor = node.borrow().right_neighbor.clone();
-        while let Some(curr) = current_neighbor {
-            {
-                let nb = curr.borrow();
-                if nb.status == ByteRangeStatus::Complete {
-                    current_neighbor = nb.right_neighbor.clone();
-                    continue;
-                }
-            }
-
-            let success = self.split_byte_range_node(&curr, true)?;
-            if !success {
-                current_neighbor = node.borrow().right_neighbor.clone();
-                continue;
-            }
-
-            let left_child_after_split = curr.borrow().left_child.clone();
-
-            {
-                let node_borrow = node.borrow();
-                let right_child_rc = node_borrow
-                    .right_child
-                    .as_ref()
-                    .ok_or_else(|| "expected node.right_child to exist".to_string())?
-                    .clone();
-
-                right_child_rc.borrow_mut().right_neighbor = left_child_after_split;
-            }
-
-            node = curr;
-            current_neighbor = node.borrow().right_neighbor.clone();
-        }
-
-        Ok(())
+        split_nodes
     }
 
     pub fn search_node<T: AsRef<ByteRange>>(&self, target: T) -> Option<NodeRef> {
@@ -602,7 +608,7 @@ impl ByteRangeNode {
 /// is set in cases where there already exist a maximum number (max_worker_number) of nodes created
 /// with status ToDownload. Therefore, those initial nodes are assigned to workers, and when finished,
 /// the engine takes new ranges from the ToDownloadInQueue status to assign to workers.
-#[derive(PartialEq, Copy, Clone, Display, EnumString)]
+#[derive(PartialEq, Copy, Clone, Debug, Display, EnumString)]
 pub enum ByteRangeStatus {
     ToDownload,
     Stopped,
@@ -612,4 +618,123 @@ pub enum ByteRangeStatus {
     ReuseRequested,
     Outdated,
     Complete,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lowest(tree: &ByteRangeTree) -> Vec<(u64, u64, ByteRangeStatus, u8)> {
+        tree.lowest_level_nodes
+            .iter()
+            .map(|n| {
+                let n = n.borrow();
+                (n.range.start, n.range.end, n.status, n.worker_number)
+            })
+            .collect()
+    }
+
+    /// Lowest level nodes must cover 0..=size-1 contiguously without overlaps.
+    fn assert_covers(tree: &ByteRangeTree, size: u64) {
+        let nodes = lowest(tree);
+        let mut next = 0;
+        for (start, end, _, _) in &nodes {
+            assert_eq!(*start, next, "gap/overlap in {:?}", nodes);
+            assert!(end >= start);
+            next = end + 1;
+        }
+        assert_eq!(next, size, "tree does not end at size - 1: {:?}", nodes);
+    }
+
+    #[test]
+    fn fresh_tree_uses_inclusive_end() {
+        let tree = ByteRangeTree::from_missing_bytes(1000, 8, vec![ByteRange::new(0, 999)]);
+        assert_eq!(lowest(&tree), vec![(0, 999, ByteRangeStatus::ToDownload, 0)]);
+        // legacy non-inclusive end is normalized
+        let tree = ByteRangeTree::from_missing_bytes(1000, 8, vec![ByteRange::new(0, 1000)]);
+        assert_eq!(lowest(&tree), vec![(0, 999, ByteRangeStatus::ToDownload, 0)]);
+    }
+
+    #[test]
+    fn resume_tree_assigns_unique_workers() {
+        let size = 60_000_000;
+        let missing = vec![
+            ByteRange::new(0, 4_999_999),
+            ByteRange::new(10_000_000, 14_999_999),
+            ByteRange::new(30_000_000, 34_999_999),
+            ByteRange::new(50_000_000, size - 1),
+        ];
+        let tree = ByteRangeTree::from_missing_bytes(size, 8, missing);
+        assert_covers(&tree, size);
+        let mut workers: Vec<u8> = lowest(&tree)
+            .into_iter()
+            .filter(|n| n.2 == ByteRangeStatus::ToDownload)
+            .map(|n| n.3)
+            .collect();
+        let count = workers.len();
+        assert_eq!(count, 8);
+        workers.sort();
+        workers.dedup();
+        assert_eq!(workers.len(), count, "duplicate worker numbers");
+        assert!(workers.iter().all(|w| *w < 8));
+        assert_eq!(tree.max_worker_number(), 7);
+    }
+
+    #[test]
+    fn resume_tree_queues_ranges_beyond_max_workers() {
+        let size = 10_000_000;
+        let missing: Vec<ByteRange> = (0..5)
+            .map(|i| ByteRange::new(i * 2_000_000 + 1_000_000, i * 2_000_000 + 1_999_999))
+            .collect();
+        let tree = ByteRangeTree::from_missing_bytes(size, 2, missing);
+        assert_covers(&tree, size);
+        let nodes = lowest(&tree);
+        let to_download = nodes.iter().filter(|n| n.2 == ByteRangeStatus::ToDownload).count();
+        let queued = nodes
+            .iter()
+            .filter(|n| n.2 == ByteRangeStatus::ToDownloadInQueue)
+            .count();
+        assert_eq!(to_download, 2);
+        assert_eq!(queued, 3);
+    }
+
+    #[test]
+    fn split_is_bounded_and_keeps_coverage() {
+        let size = 80_000_000;
+        let mut tree = ByteRangeTree::from_missing_bytes(size, 8, vec![ByteRange::new(0, size - 1)]);
+        tree.root.borrow_mut().status = ByteRangeStatus::Downloading;
+        assert_eq!(tree.split(1).len(), 1);
+        for n in &tree.lowest_level_nodes {
+            n.borrow_mut().status = ByteRangeStatus::Downloading;
+        }
+        assert_eq!(tree.split(1).len(), 1);
+        assert_eq!(tree.lowest_level_nodes.len(), 3);
+        for n in &tree.lowest_level_nodes {
+            n.borrow_mut().status = ByteRangeStatus::Downloading;
+        }
+        assert_eq!(tree.split(10).len(), 3);
+        assert_covers(&tree, size);
+        // neighbors are linked left to right
+        let first = tree.lowest_level_nodes[0].clone();
+        let mut cursor = Some(first);
+        let mut count = 0;
+        while let Some(node) = cursor {
+            count += 1;
+            cursor = node.borrow().right_neighbor.clone();
+        }
+        assert_eq!(count, tree.lowest_level_nodes.len());
+    }
+
+    #[test]
+    fn search_node_finds_split_parent() {
+        let size = 10_000_000;
+        let mut tree = ByteRangeTree::from_missing_bytes(size, 8, vec![ByteRange::new(0, size - 1)]);
+        let root = tree.root.clone();
+        tree.split_byte_range_node(&root, true).unwrap();
+        assert!(tree.search_node(ByteRange::new(0, size - 1)).is_some());
+        let left = tree.lowest_level_nodes[0].borrow().range.clone();
+        assert!(tree.search_node(&left).is_some());
+        // splitting a non leaf node is refused
+        assert!(tree.split_byte_range_node(&root, true).is_err());
+    }
 }
